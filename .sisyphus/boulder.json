@@ -2,10 +2,24 @@
   "active_plan": "/Users/danny/Developer/polykit-rust/.sisyphus/plans/polylog-rust.md",
   "started_at": "2026-04-29T11:18:37.361Z",
   "session_ids": [
-    "ses_228f2028affe3ljkzvLrqj1ZKe"
+    "ses_228f2028affe3ljkzvLrqj1ZKe",
+    "ses_226b512c6ffekImYXcjhM9hQx5",
+    "ses_226b4fe81ffeQM6vVuLfFyEYdN",
+    "ses_226b4dee7ffeiibj7SGLix0jeI",
+    "ses_226b4bd73ffesu5ude4glXC5V3",
+    "ses_226a6e4b5ffeUE1GjvaiiV5x1W",
+    "ses_226a65ff6ffeWKckP0voHk04eN",
+    "ses_22697cbc1ffeV1OLIsSz8vz6oM"
   ],
   "session_origins": {
-    "ses_228f2028affe3ljkzvLrqj1ZKe": "direct"
+    "ses_228f2028affe3ljkzvLrqj1ZKe": "direct",
+    "ses_226b512c6ffekImYXcjhM9hQx5": "appended",
+    "ses_226b4fe81ffeQM6vVuLfFyEYdN": "appended",
+    "ses_226b4dee7ffeiibj7SGLix0jeI": "appended",
+    "ses_226b4bd73ffesu5ude4glXC5V3": "appended",
+    "ses_226a6e4b5ffeUE1GjvaiiV5x1W": "appended",
+    "ses_226a65ff6ffeWKckP0voHk04eN": "appended",
+    "ses_22697cbc1ffeV1OLIsSz8vz6oM": "appended"
   },
   "plan_name": "polylog-rust",
   "agent": "atlas",
@@ -50,10 +64,9 @@
       "task_key": "todo:10",
       "task_label": "10",
       "task_title": "`src/log/init.rs` — `init()`, idempotency, subscriber wiring, tracing-log bridge",
-      "session_id": "ses_226ba8457ffeZ10YmJaxdfsgr4",
-      "agent": "Sisyphus-Junior",
-      "category": "quick",
-      "updated_at": "2026-04-29T12:47:54.635Z"
+      "session_id": "ses_22697c900ffeS3v7T1Jre6UYZH",
+      "agent": "oracle",
+      "updated_at": "2026-04-29T13:27:12.831Z"
     }
   }
 }

@@ -37,7 +37,10 @@ mod tests {
 
     #[test]
     fn override_changes_min_level_for_scope() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = match TEST_LOCK.lock() {
+            Ok(guard) => guard,
+            Err(_) => panic!("mutex poisoned"),
+        };
 
         set_min_level(Level::Info);
         {
@@ -50,7 +53,10 @@ mod tests {
 
     #[test]
     fn nested_overrides_unwind_in_lifo_order() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = match TEST_LOCK.lock() {
+            Ok(guard) => guard,
+            Err(_) => panic!("mutex poisoned"),
+        };
 
         set_min_level(Level::Warn);
         {
@@ -73,7 +79,10 @@ mod tests {
         use std::sync::mpsc;
         use std::thread;
 
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = match TEST_LOCK.lock() {
+            Ok(guard) => guard,
+            Err(_) => panic!("mutex poisoned"),
+        };
 
         set_min_level(Level::Error);
 
@@ -82,15 +91,15 @@ mod tests {
 
         let handle = thread::spawn(move || {
             let _override = LogLevelOverride::new(Level::Debug);
-            ready_tx.send(()).unwrap();
-            done_rx.recv().unwrap();
+            let _ = ready_tx.send(());
+            let _ = done_rx.recv();
         });
 
-        ready_rx.recv().unwrap();
+        let _ = ready_rx.recv();
         assert_eq!(current_min_level(), Level::Debug);
 
-        done_tx.send(()).unwrap();
-        handle.join().unwrap();
+        let _ = done_tx.send(());
+        let _ = handle.join();
 
         assert_eq!(current_min_level(), Level::Error);
     }

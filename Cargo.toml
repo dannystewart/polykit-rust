@@ -14,7 +14,6 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["r
 tracing-appender = "0.2"
 tracing-log = "0.2"
 owo-colors = { version = "4", features = ["supports-colors"] }
-anstream = "0.6"
 jiff = { version = "0.2", default-features = false, features = ["std", "tz-system"] }
 
 [dev-dependencies]

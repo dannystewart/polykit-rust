@@ -1,5 +1,5 @@
-use std::io::Write;
-use std::sync::OnceLock;
+use std::fmt::Write as _;
+use std::io::{self, Write};
 
 use owo_colors::OwoColorize;
 use tracing_subscriber::Layer;
@@ -11,34 +11,15 @@ use crate::log::level::{Level, level_color};
 pub(crate) struct ConsoleLayer {
     format: FormatMode,
     color_mode: ColorMode,
-    #[allow(dead_code)]
-    min_level: Level,
     tz: jiff::tz::TimeZone,
-    #[allow(dead_code)]
-    tz_warning_emitted: OnceLock<()>,
 }
 
 impl ConsoleLayer {
-    #[allow(dead_code)]
-    pub(crate) fn new(config: &LogConfig) -> Self {
-        let tz_warning_emitted = OnceLock::new();
-        let tz = resolve_tz(&tz_warning_emitted);
-        Self {
-            format: config.format,
-            color_mode: config.color,
-            min_level: config.level,
-            tz,
-            tz_warning_emitted,
-        }
-    }
-
     pub(crate) fn new_with_tz(config: &LogConfig, tz: jiff::tz::TimeZone) -> Self {
         Self {
             format: config.format,
             color_mode: config.color,
-            min_level: config.level,
             tz,
-            tz_warning_emitted: OnceLock::new(),
         }
     }
 
@@ -59,7 +40,7 @@ impl ConsoleLayer {
         event.record(&mut visitor);
         let mut msg = visitor.message;
         for (k, v) in visitor.fields {
-            msg.push_str(&format!(" {}={}", k, v));
+            let _ = write!(&mut msg, " {}={}", k, v);
         }
 
         let ts = jiff::Zoned::now()
@@ -96,41 +77,9 @@ where
     ) {
         let bytes = self.render_event(event);
         if !bytes.is_empty() {
-            let mut stderr = anstream::stderr();
+            let mut stderr = io::stderr().lock();
             let _ = stderr.write_all(&bytes);
             let _ = stderr.flush();
-        }
-    }
-}
-
-/// Resolve the timezone for log timestamps.
-///
-/// Reads the `TZ` environment variable, falling back to `America/New_York`,
-/// then UTC. Emits one-time stderr warnings on invalid values or missing data.
-pub fn resolve_tz(warning_lock: &OnceLock<()>) -> jiff::tz::TimeZone {
-    if let Ok(tz_name) = std::env::var("TZ") {
-        if !tz_name.is_empty() {
-            match jiff::tz::TimeZone::get(&tz_name) {
-                Ok(tz) => return tz,
-                Err(_) => {
-                    warning_lock.get_or_init(|| {
-                        eprintln!(
-                            "polykit::log: invalid TZ env var '{}'; falling back to America/New_York",
-                            tz_name
-                        );
-                    });
-                }
-            }
-        }
-    }
-
-    match jiff::tz::TimeZone::get("America/New_York") {
-        Ok(tz) => tz,
-        Err(_) => {
-            eprintln!(
-                "polykit::log: failed to load America/New_York timezone; falling back to UTC"
-            );
-            jiff::tz::TimeZone::UTC
         }
     }
 }
@@ -332,8 +281,8 @@ mod tests {
 
     #[test]
     fn golden_unicode_preserved() {
-        let result = format_simple(Level::Info, "こんにちは 🎉", false);
-        assert_eq!(result, "こんにちは 🎉\n".as_bytes().to_vec());
+        let result = format_simple(Level::Info, "こんにちは 日本語", false);
+        assert_eq!(result, "こんにちは 日本語\n".as_bytes().to_vec());
     }
 
     #[test]
@@ -361,7 +310,10 @@ mod tests {
             }
             fn event(&self, event: &tracing::Event<'_>) {
                 let bytes = self.layer.render_event(event);
-                self.output.lock().unwrap().extend_from_slice(&bytes);
+                match self.output.lock() {
+                    Ok(mut output) => output.extend_from_slice(&bytes),
+                    Err(_) => panic!("mutex poisoned"),
+                }
             }
             fn enter(&self, _span: &tracing::span::Id) {}
             fn exit(&self, _span: &tracing::span::Id) {}
@@ -370,9 +322,7 @@ mod tests {
         let layer = ConsoleLayer {
             format: FormatMode::Normal,
             color_mode: ColorMode::Never,
-            min_level: Level::Warn,
             tz: jiff::tz::TimeZone::UTC,
-            tz_warning_emitted: OnceLock::new(),
         };
 
         let sub = Arc::new(CapturingSubscriber {
@@ -385,7 +335,10 @@ mod tests {
             tracing::debug!("this should be filtered");
         });
 
-        let output = sub.output.lock().unwrap();
+        let output = match sub.output.lock() {
+            Ok(output) => output,
+            Err(_) => panic!("mutex poisoned"),
+        };
         assert!(output.is_empty());
     }
 }

@@ -1,0 +1,5 @@
+REJECTED:
+
+1. T8 Violation: `src/log/console.rs` uses `std::io::stderr().lock()` instead of `anstream::stderr()` for writing output. The plan explicitly states: "Do NOT call `std::io::stderr()` directly — go through `anstream::stderr()`".
+2. T15 Violation: `src/log/file.rs` uses `contains` and `starts_with` in its golden tests (e.g., `golden_file_info_no_ansi`, `golden_file_warn`, `golden_file_unknown_file_line`, `golden_file_unicode_preserved`). The plan explicitly states: "Do NOT use approximate matching (`contains`, `starts_with`) for the byte-exact golden tests; use `assert_eq!` on full bytes".
+3. T15 Violation: `src/log/file.rs` only has 4 golden tests (`golden_file_info_no_ansi`, `golden_file_warn`, `golden_file_unknown_file_line`, `golden_file_unicode_preserved`). The plan requires at least 5 golden tests, specifically missing `golden_file_no_ansi_bytes` (though `file_format_no_ansi` exists, it's not named as a golden test and the acceptance criteria says "At least 5 golden tests added to file.rs").

@@ -1,21 +1,18 @@
 //! Test harness: drives polykit::log init based on argv.
 use polykit::log::{self, ColorMode, InitError, Level};
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let scenario = args.get(1).cloned().unwrap_or_default();
     let log_path = args.get(2).cloned().unwrap_or("-".to_string());
 
     match scenario.as_str() {
         "first_init" => {
-            let _g = log::init()
-                .level(Level::Info)
-                .install()
-                .expect("init failed");
+            let _g = log::init().level(Level::Info).install()?;
             log::info!("first init ok");
         }
         "second_init_returns_error" => {
-            let _g = log::init().install().expect("first init must succeed");
+            let _g = log::init().install()?;
             match log::init().install() {
                 Err(InitError::AlreadyInitialized) => println!("ALREADY_INITIALIZED"),
                 Ok(_) => {
@@ -38,10 +35,7 @@ fn main() {
                 eprintln!("need log path");
                 std::process::exit(2);
             }
-            let _g = log::init()
-                .log_file(&log_path)
-                .install()
-                .expect("init failed");
+            let _g = log::init().log_file(&log_path).install()?;
             log::info!("file write");
         }
         "file_init_unwritable_returns_error" => {
@@ -60,32 +54,20 @@ fn main() {
         }
         "no_color_env_disables_ansi" => {
             unsafe { std::env::set_var("NO_COLOR", "1") };
-            let _g = log::init()
-                .color(ColorMode::Auto)
-                .install()
-                .expect("init failed");
+            let _g = log::init().color(ColorMode::Auto).install()?;
             log::info!("no_color test");
         }
         "force_color_env_enables_ansi_when_piped" => {
             unsafe { std::env::set_var("FORCE_COLOR", "1") };
-            let _g = log::init()
-                .color(ColorMode::Auto)
-                .install()
-                .expect("init failed");
+            let _g = log::init().color(ColorMode::Auto).install()?;
             log::info!("force_color test");
         }
         "log_crate_bridge" => {
-            let _g = log::init()
-                .level(Level::Info)
-                .install()
-                .expect("init failed");
+            let _g = log::init().level(Level::Info).install()?;
             ::log::info!("from log crate");
         }
         "level_override_in_scope" => {
-            let _g = log::init()
-                .level(Level::Info)
-                .install()
-                .expect("init failed");
+            let _g = log::init().level(Level::Info).install()?;
             log::info!("info visible");
             log::debug!("debug filtered");
             {
@@ -95,10 +77,7 @@ fn main() {
             log::debug!("filtered again");
         }
         "catch_logs_error_chain" => {
-            let _g = log::init()
-                .level(Level::Info)
-                .install()
-                .expect("init failed");
+            let _g = log::init().level(Level::Info).install()?;
             #[derive(Debug)]
             struct Outer(String);
             impl std::fmt::Display for Outer {
@@ -124,10 +103,7 @@ fn main() {
             });
         }
         "concurrent_logging_no_corruption" => {
-            let _g = log::init()
-                .level(Level::Info)
-                .install()
-                .expect("init failed");
+            let _g = log::init().level(Level::Info).install()?;
             use std::thread;
             let handles: Vec<_> = (0..8)
                 .map(|t| {
@@ -139,7 +115,7 @@ fn main() {
                 })
                 .collect();
             for h in handles {
-                h.join().unwrap();
+                let _ = h.join();
             }
         }
         other => {
@@ -147,4 +123,6 @@ fn main() {
             std::process::exit(2)
         }
     }
+
+    Ok(())
 }

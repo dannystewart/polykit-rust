@@ -16,7 +16,6 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 static MIN_LEVEL: AtomicU8 = AtomicU8::new(1); // default Info
 
 /// Obtain a [`LogBuilder`] to configure and install the polykit logger.
-#[allow(dead_code)]
 pub fn init() -> LogBuilder {
     LogBuilder::new()
 }

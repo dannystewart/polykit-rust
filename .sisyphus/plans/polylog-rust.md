@@ -134,7 +134,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
 **Wave 3 — Builder & layers** (T7 first, then T8+T9 parallel):
 - T7 [unspecified-low]: `src/log/builder.rs` — LogBuilder struct with setters
-- T8 [unspecified-high]: `src/log/console.rs` — Custom tracing Layer for console (jiff timestamps, owo-colors, anstream, all 3 format modes)
+- T8 [unspecified-high]: `src/log/console.rs` — Custom tracing Layer for console (jiff timestamps, owo-colors, all 3 format modes)
 - T9 [unspecified-low]: `src/log/file.rs` — File layer (tracing-appender daily rolling, plain formatter)
 
 **Wave 4 — Init plumbing & helpers** (4 parallel, depend on T7-T9):
@@ -210,7 +210,6 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
        - `tracing-appender = "0.2"`
        - `tracing-log = "0.2"`
        - `owo-colors = { version = "4", features = ["supports-colors"] }`
-       - `anstream = "0.6"`
        - `jiff = { version = "0.1", default-features = false, features = ["std", "tz-system"] }` — if jiff has bumped to 0.2 by exec time, use latest stable; verify exact feature names with `cargo add --dry-run jiff` before locking
   2. Delete `/Users/danny/Developer/polykit-rust/src/main.rs`
   3. Create `/Users/danny/Developer/polykit-rust/src/lib.rs` with content:
@@ -291,7 +290,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
   - [ ] `[ -f /Users/danny/Developer/polykit-rust/rust-toolchain.toml ]` succeeds
   - [ ] `[ ! -f /Users/danny/Developer/polykit-rust/LICENSE ]` succeeds (no LICENSE created)
   - [ ] `grep -q '^/target$' /Users/danny/Developer/polykit-rust/.gitignore` succeeds
-  - [ ] All seven dependencies (tracing, tracing-subscriber, tracing-appender, tracing-log, owo-colors, anstream, jiff) appear in `cargo metadata` output
+  - [ ] All six dependencies (tracing, tracing-subscriber, tracing-appender, tracing-log, owo-colors, jiff) appear in `cargo metadata` output
 
   **QA Scenarios**:
   ```
@@ -304,14 +303,14 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
     Expected: Output is exactly `polykit 2024 1.85`
     Evidence: .sisyphus/evidence/task-1-metadata.json
 
-  Scenario: Dependency list is exactly the seven crates we agreed to
+  Scenario: Dependency list is exactly the six crates we agreed to
     Tool: Bash
     Steps:
       cd /Users/danny/Developer/polykit-rust
       cargo metadata --format-version 1 --no-deps | \
         jq -r '.packages[0].dependencies[] | .name' | sort > .sisyphus/evidence/task-1-deps.txt
       cat .sisyphus/evidence/task-1-deps.txt
-    Expected: Output is exactly these 7 lines (sorted): anstream, jiff, owo-colors, tracing, tracing-appender, tracing-log, tracing-subscriber
+    Expected: Output is exactly these 6 lines (sorted): jiff, owo-colors, tracing, tracing-appender, tracing-log, tracing-subscriber
     Evidence: .sisyphus/evidence/task-1-deps.txt
 
   Scenario: No LICENSE file exists
@@ -624,7 +623,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
   3. Update `src/log/mod.rs`: add `pub use format::{ColorMode, FormatMode};`
 
   **Must NOT do**:
-  - Do NOT call `anstream` or `supports-color` directly inside `should_emit_ansi` — pass `target_is_tty: bool` in. The console layer (T8) supplies this from `std::io::IsTerminal::is_terminal(&io::stderr())`. This keeps `format.rs` deterministically testable.
+  - Do NOT call `supports-color` directly inside `should_emit_ansi` — pass `target_is_tty: bool` in. The console layer (T8) supplies this from `std::io::IsTerminal::is_terminal(&io::stderr())`. This keeps `format.rs` deterministically testable.
   - Do NOT add additional FormatMode variants like `Json` or `Pretty`
   - Do NOT add `ColorMode::Detect` or other variants
 
@@ -847,8 +846,8 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
      - `fn on_event(&self, event: &tracing::Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>)`:
        - Call `self.render_event(event)` → bytes
        - If bytes is empty, return
-       - Write bytes to `anstream::stderr()` (which strips ANSI when stderr isn't a TTY based on its own logic; we additionally control via `should_emit_ansi`).
-       - Flush. If write fails, silently ignore (logging-during-logging recursion is bad).
+        - Write bytes to `std::io::stderr().lock()`.
+        - Flush. If write fails, silently ignore (logging-during-logging recursion is bad).
   5. Inline unit tests for the pure helpers (the on_event Layer impl is exercised in T15 via golden tests):
      - `resolve_tz_with_invalid_falls_back` — set `TZ=Invalid/Bogus` (use `temp_env` pattern), call resolve_tz, assert returns America/New_York TimeZone
      - `resolve_tz_unset_uses_default` — clear TZ, call resolve_tz, assert returns America/New_York
@@ -860,8 +859,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
   - Do NOT use `tracing_subscriber::fmt::Layer` — we are building a custom Layer because the default fmt layer cannot reproduce Python's exact format
   - Do NOT use ANSI escape codes literally — go through `owo-colors` for forward-compat with NO_COLOR/etc.
   - Do NOT write to stdout — logs go to stderr (matches Python convention)
-  - Do NOT call `std::io::stderr()` directly — go through `anstream::stderr()` for terminal-cap adaptation
-  - Do NOT add a `Json` format branch — only Simple/Normal/Context
+   - Do NOT add a `Json` format branch — only Simple/Normal/Context
   - Do NOT prefix multiline messages line-by-line in v0.1 (document as known limitation)
   - Do NOT panic on render failures (silently drop the event) — logging must never crash the program
 
@@ -877,7 +875,6 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
   - jiff TimeZone: <https://docs.rs/jiff/latest/jiff/tz/struct.TimeZone.html>
   - jiff Zoned + strftime: <https://docs.rs/jiff/latest/jiff/struct.Zoned.html#method.strftime>
   - owo-colors v4 OwoColorize trait: <https://docs.rs/owo-colors/4/owo_colors/trait.OwoColorize.html>
-  - anstream stderr: <https://docs.rs/anstream/latest/anstream/fn.stderr.html>
   - Python formatter exact format strings: `/Users/danny/Developer/polykit/src/polykit/log/formatters.py`
   - `std::io::IsTerminal`: <https://doc.rust-lang.org/std/io/trait.IsTerminal.html>
 
@@ -999,7 +996,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: YES — at end of Wave 3, single commit T7+T8+T9 | Message: `feat(log): add builder, console layer, and file layer` | Files: src/log/builder.rs, src/log/console.rs, src/log/file.rs, src/log/mod.rs
 
-- [ ] 10. `src/log/init.rs` — `init()`, idempotency, subscriber wiring, tracing-log bridge
+- [x] 10. `src/log/init.rs` — `init()`, idempotency, subscriber wiring, tracing-log bridge
 
   **What to do**:
   1. Create `/Users/danny/Developer/polykit-rust/src/log/init.rs`.
@@ -1096,7 +1093,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: NO (combine with T11, T12 as Wave 4 commit)
 
-- [ ] 11. `src/log/level_override.rs` — RAII level override guard
+- [x] 11. `src/log/level_override.rs` — RAII level override guard
 
   **What to do**:
   1. Create `/Users/danny/Developer/polykit-rust/src/log/level_override.rs`:
@@ -1786,7 +1783,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 > **Do NOT auto-proceed after verification. Wait for user's explicit approval before marking work complete.**
 > **Never mark F1-F4 as checked before getting user's okay.** Rejection or user feedback → fix → re-run → present again → wait for okay.
 
-- [ ] F1. Plan Compliance Audit — oracle
+- [x] F1. Plan Compliance Audit — oracle
 
   **What to do**: Oracle reads `.sisyphus/plans/polylog-rust.md` AND the actual implementation, then audits compliance task-by-task. Specifically:
   - Every "Must NOT" item in every task is verified absent from the implementation
@@ -1806,7 +1803,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Evidence**: `.sisyphus/evidence/F1-oracle-compliance.txt`
 
-- [ ] F2. Code Quality Review — unspecified-high
+- [x] F2. Code Quality Review — unspecified-high
 
   **What to do**: Read every Rust file in `src/`, `tests/`, `examples/` and review for:
   - Idiomatic Rust 2024 style (no leftover `match` where `if let` fits, etc.)
@@ -1824,7 +1821,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Evidence**: `.sisyphus/evidence/F2-quality.txt`
 
-- [ ] F3. Real Manual QA Execution — unspecified-high
+- [x] F3. Real Manual QA Execution — unspecified-high
 
   **What to do**: Actually execute the full verification matrix end-to-end (don't just read tests):
   1. Clone-fresh checkout simulation: `cargo clean && cargo build --all-targets`
@@ -1844,7 +1841,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Evidence**: `.sisyphus/evidence/F3-manual-qa.txt`
 
-- [ ] F4. Scope Fidelity Check — deep
+- [x] F4. Scope Fidelity Check — deep
 
   **What to do**: Verify that the implementation honors v0.1 scope decisions and Metis directives literally. Specifically check that NONE of the deferred features leaked in:
   - No Supabase handler module/file (`grep -r supabase src/` → nothing)

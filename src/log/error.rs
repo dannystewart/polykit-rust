@@ -58,18 +58,7 @@ pub struct InitGuard {
     pub(crate) _worker: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
-#[allow(dead_code)]
 impl InitGuard {
-    /// Internal: guard with no worker (no file logging configured).
-    pub(crate) fn empty() -> Self {
-        Self { _worker: None }
-    }
-
-    /// Internal: guard that holds a file writer worker.
-    pub(crate) fn with_worker(g: tracing_appender::non_blocking::WorkerGuard) -> Self {
-        Self { _worker: Some(g) }
-    }
-
     /// Internal: guard with an optional worker.
     pub(crate) fn with_worker_opt(
         worker: Option<tracing_appender::non_blocking::WorkerGuard>,

@@ -24,20 +24,32 @@ impl Visit for MessageVisitor {
 }
 
 pub(crate) struct FileLayer {
-    #[allow(dead_code)]
-    pub(crate) min_level: Level,
     pub(crate) tz: jiff::tz::TimeZone,
     pub(crate) writer: tracing_appender::non_blocking::NonBlocking,
+}
+
+fn format_file(
+    level: Level,
+    ts: &str,
+    target: &str,
+    file_basename: &str,
+    line_num: u32,
+    msg: &str,
+) -> Vec<u8> {
+    let label = level.label();
+    format!("[{ts}] {label} {target} {file_basename}:{line_num}: {msg}\n").into_bytes()
 }
 
 pub(crate) fn build_file_layer(
     config: &LogConfig,
     tz: jiff::tz::TimeZone,
 ) -> Result<(FileLayer, tracing_appender::non_blocking::WorkerGuard), InitError> {
-    let path = config
-        .log_file
-        .as_ref()
-        .expect("file layer requires log_file");
+    let Some(path) = config.log_file.as_ref() else {
+        return Err(InitError::FileSetupFailed {
+            path: PathBuf::new(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, "log_file missing"),
+        });
+    };
 
     let (directory, filename): (PathBuf, PathBuf) = {
         let path_str = path.to_string_lossy();
@@ -71,14 +83,7 @@ pub(crate) fn build_file_layer(
     let file_appender = tracing_appender::rolling::daily(&directory, &filename);
     let (writer, guard) = tracing_appender::non_blocking(file_appender);
 
-    Ok((
-        FileLayer {
-            min_level: config.level,
-            tz,
-            writer,
-        },
-        guard,
-    ))
+    Ok((FileLayer { tz, writer }, guard))
 }
 
 impl FileLayer {
@@ -89,9 +94,8 @@ impl FileLayer {
             return Vec::new();
         }
 
-        let event_level = match Level::from_tracing(*meta.level()) {
-            Some(l) => l,
-            None => return Vec::new(),
+        let Some(event_level) = Level::from_tracing(*meta.level()) else {
+            return Vec::new();
         };
         if event_level < crate::log::init::current_min_level() {
             return Vec::new();
@@ -106,22 +110,19 @@ impl FileLayer {
             .strftime("%Y-%m-%d %H:%M:%S")
             .to_string();
 
-        let (file_basename, line_str) = match (meta.file(), meta.line()) {
+        let (file_basename, line_num) = match (meta.file(), meta.line()) {
             (Some(f), Some(l)) => {
                 let basename = Path::new(f)
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(f);
-                (basename.to_owned(), l.to_string())
+                (basename.to_owned(), l)
             }
-            _ => ("<unknown>".to_owned(), "0".to_owned()),
+            _ => ("<unknown>".to_owned(), 0),
         };
 
         let target = meta.target();
-        let label = event_level.label();
-
-        let line = format!("[{ts}] {label} {target} {file_basename}:{line_str}: {msg}\n");
-        line.into_bytes()
+        format_file(event_level, &ts, target, &file_basename, line_num, &msg)
     }
 }
 
@@ -154,18 +155,18 @@ mod tests {
 
     fn make_layer() -> FileLayer {
         let dir = std::env::temp_dir().join("polykit-file-test-sink");
-        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::fs::create_dir_all(&dir).is_ok());
         let appender = tracing_appender::rolling::daily(&dir, "test.log");
         let (writer, _guard) = tracing_appender::non_blocking(appender);
         FileLayer {
-            min_level: Level::Debug,
             tz: jiff::tz::TimeZone::UTC,
             writer,
         }
     }
 
     fn render_direct(
-        layer: &FileLayer,
+        _layer: &FileLayer,
+        ts: &'static str,
         level: tracing::Level,
         target: &'static str,
         file: Option<&'static str>,
@@ -176,33 +177,22 @@ mod tests {
             return Vec::new();
         }
 
-        let event_level = match Level::from_tracing(level) {
-            Some(l) => l,
-            None => return Vec::new(),
-        };
-        if event_level < layer.min_level {
+        let Some(event_level) = Level::from_tracing(level) else {
             return Vec::new();
-        }
+        };
 
-        let ts = jiff::Zoned::now()
-            .with_time_zone(layer.tz.clone())
-            .strftime("%Y-%m-%d %H:%M:%S")
-            .to_string();
-
-        let (file_basename, line_str) = match (file, line) {
+        let (file_basename, line_num) = match (file, line) {
             (Some(f), Some(l)) => {
                 let basename = std::path::Path::new(f)
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or(f);
-                (basename.to_owned(), l.to_string())
+                (basename.to_owned(), l)
             }
-            _ => ("<unknown>".to_owned(), "0".to_owned()),
+            _ => ("<unknown>".to_owned(), 0),
         };
 
-        let label = event_level.label();
-        let line_out = format!("[{ts}] {label} {target} {file_basename}:{line_str}: {msg}\n");
-        line_out.into_bytes()
+        format_file(event_level, ts, target, &file_basename, line_num, msg)
     }
 
     #[test]
@@ -210,16 +200,18 @@ mod tests {
         let layer = make_layer();
         let bytes = render_direct(
             &layer,
+            "2024-01-02 03:04:05",
             tracing::Level::INFO,
             "myapp",
             Some("src/main.rs"),
             Some(42),
             "hello world",
         );
-        assert!(!bytes.is_empty());
-        assert!(
-            !bytes.contains(&0x1b),
-            "output must not contain ANSI escape bytes"
+        assert_eq!(
+            bytes,
+            "[2024-01-02 03:04:05] [INFO] myapp main.rs:42: hello world\n"
+                .as_bytes()
+                .to_vec()
         );
     }
 
@@ -228,31 +220,27 @@ mod tests {
         let layer = make_layer();
         let bytes = render_direct(
             &layer,
+            "2024-01-02 03:04:05",
             tracing::Level::INFO,
             "myapp",
             Some("src/main.rs"),
             Some(1),
             "ts test",
         );
-        let s = String::from_utf8(bytes).unwrap();
-        assert!(s.starts_with('['), "must start with '[': {s:?}");
-        let bracket_end = s.find(']').expect("must have closing ']'");
-        let ts_part = &s[1..bracket_end];
-        assert_eq!(ts_part.len(), 19, "timestamp must be 19 chars: {ts_part:?}");
-        assert_eq!(&ts_part[4..5], "-", "year-month separator: {ts_part:?}");
-        assert_eq!(&ts_part[7..8], "-", "month-day separator: {ts_part:?}");
-        assert_eq!(&ts_part[10..11], " ", "date-time separator: {ts_part:?}");
-        assert_eq!(&ts_part[13..14], ":", "hour-min separator: {ts_part:?}");
-        assert_eq!(&ts_part[16..17], ":", "min-sec separator: {ts_part:?}");
+        assert_eq!(
+            bytes,
+            "[2024-01-02 03:04:05] [INFO] myapp main.rs:1: ts test\n"
+                .as_bytes()
+                .to_vec()
+        );
     }
 
     #[test]
     fn build_file_layer_creates_missing_parent_dir() {
-        let rand: u64 = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .subsec_nanos()
-            .into();
+        let rand: u64 = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(duration) => duration.subsec_nanos().into(),
+            Err(_) => panic!("system time should be after UNIX_EPOCH"),
+        };
         let log_path = PathBuf::from(format!("target/tmp/test-mkdir-{rand}/sub/log/app.log"));
         let config = LogConfig {
             level: Level::Info,
@@ -262,7 +250,10 @@ mod tests {
         };
         let result = build_file_layer(&config, jiff::tz::TimeZone::UTC);
         assert!(result.is_ok(), "expected Ok but got Err");
-        let dir = log_path.parent().unwrap();
+        let dir = match log_path.parent() {
+            Some(dir) => dir,
+            None => panic!("log path should have a parent"),
+        };
         assert!(dir.exists(), "parent dir should have been created");
     }
 
@@ -286,18 +277,19 @@ mod tests {
         let layer = make_layer();
         let bytes = render_direct(
             &layer,
+            "2024-01-02 03:04:05",
             tracing::Level::INFO,
             "myapp::module",
             Some("src/lib.rs"),
             Some(99),
             "golden info message",
         );
-        let s = String::from_utf8(bytes).unwrap();
-        assert!(s.contains("[INFO]"), "missing [INFO]: {s:?}");
-        assert!(s.contains("myapp::module"), "missing target: {s:?}");
-        assert!(s.contains("lib.rs:99"), "missing file:line: {s:?}");
-        assert!(s.contains("golden info message"), "missing msg: {s:?}");
-        assert!(!s.contains('\x1b'), "must not contain ANSI: {s:?}");
+        assert_eq!(
+            bytes,
+            "[2024-01-02 03:04:05] [INFO] myapp::module lib.rs:99: golden info message\n"
+                .as_bytes()
+                .to_vec()
+        );
     }
 
     #[test]
@@ -305,16 +297,19 @@ mod tests {
         let layer = make_layer();
         let bytes = render_direct(
             &layer,
+            "2024-01-02 03:04:05",
             tracing::Level::WARN,
             "myapp",
             Some("src/warn.rs"),
             Some(7),
             "something warned",
         );
-        let s = String::from_utf8(bytes).unwrap();
-        assert!(s.contains("[WARN]"), "missing [WARN]: {s:?}");
-        assert!(s.contains("warn.rs:7"), "missing file:line: {s:?}");
-        assert!(s.contains("something warned"), "missing msg: {s:?}");
+        assert_eq!(
+            bytes,
+            "[2024-01-02 03:04:05] [WARN] myapp warn.rs:7: something warned\n"
+                .as_bytes()
+                .to_vec()
+        );
     }
 
     #[test]
@@ -322,15 +317,19 @@ mod tests {
         let layer = make_layer();
         let bytes = render_direct(
             &layer,
+            "2024-01-02 03:04:05",
             tracing::Level::ERROR,
             "myapp",
             None,
             None,
             "no location",
         );
-        let s = String::from_utf8(bytes).unwrap();
-        assert!(s.contains("<unknown>:0"), "missing <unknown>:0: {s:?}");
-        assert!(s.contains("no location"), "missing msg: {s:?}");
+        assert_eq!(
+            bytes,
+            "[2024-01-02 03:04:05] [ERROR] myapp <unknown>:0: no location\n"
+                .as_bytes()
+                .to_vec()
+        );
     }
 
     #[test]
@@ -338,13 +337,38 @@ mod tests {
         let layer = make_layer();
         let bytes = render_direct(
             &layer,
+            "2024-01-02 03:04:05",
             tracing::Level::INFO,
             "myapp",
             Some("src/unicode.rs"),
             Some(1),
-            "héllo wörld 🦀",
+            "héllo wörld 日本語",
         );
-        let s = String::from_utf8(bytes).unwrap();
-        assert!(s.contains("héllo wörld 🦀"), "unicode not preserved: {s:?}");
+        assert_eq!(
+            bytes,
+            "[2024-01-02 03:04:05] [INFO] myapp unicode.rs:1: héllo wörld 日本語\n"
+                .as_bytes()
+                .to_vec()
+        );
+    }
+
+    #[test]
+    fn golden_file_error() {
+        let layer = make_layer();
+        let bytes = render_direct(
+            &layer,
+            "2024-01-02 03:04:05",
+            tracing::Level::ERROR,
+            "myapp::core",
+            Some("src/error.rs"),
+            Some(13),
+            "boom",
+        );
+        assert_eq!(
+            bytes,
+            "[2024-01-02 03:04:05] [ERROR] myapp::core error.rs:13: boom\n"
+                .as_bytes()
+                .to_vec()
+        );
     }
 }
