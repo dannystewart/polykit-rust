@@ -27,6 +27,24 @@
       "agent": "Sisyphus-Junior",
       "category": "quick",
       "updated_at": "2026-04-29T11:31:10.668Z"
+    },
+    "todo:7": {
+      "task_key": "todo:7",
+      "task_label": "7",
+      "task_title": "`src/log/builder.rs` — LogBuilder struct + setters",
+      "session_id": "ses_226fa72f4ffeaniIMcSjDJmEnc",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-low",
+      "updated_at": "2026-04-29T11:36:20.306Z"
+    },
+    "todo:8": {
+      "task_key": "todo:8",
+      "task_label": "8",
+      "task_title": "`src/log/console.rs` — Custom tracing Layer for console output",
+      "session_id": "ses_226f7d854ffeSKMdVcWYpPdDk3",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-04-29T11:44:38.980Z"
     }
   }
 }

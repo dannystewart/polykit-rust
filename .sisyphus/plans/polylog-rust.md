@@ -521,7 +521,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: YES — at the END of Wave 1 (after T1, T2, T3 all complete) | Message: `chore: bootstrap polykit crate with library scaffold and CI` | Files: Cargo.toml, src/lib.rs, src/log/mod.rs, .gitignore, rust-toolchain.toml, README.md, .github/workflows/ci.yml; deleted: src/main.rs
 
-- [ ] 4. `src/log/level.rs` — LogLevel enum + label/color tables
+- [x] 4. `src/log/level.rs` — LogLevel enum + label/color tables
 
   **What to do**:
   1. Create `/Users/danny/Developer/polykit-rust/src/log/level.rs` defining:
@@ -599,7 +599,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: NO (combine with T5, T6 as a single Wave 2 commit)
 
-- [ ] 5. `src/log/format.rs` — FormatMode + ColorMode enums
+- [x] 5. `src/log/format.rs` — FormatMode + ColorMode enums
 
   **What to do**:
   1. Create `/Users/danny/Developer/polykit-rust/src/log/format.rs` defining:
@@ -667,7 +667,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: NO (combine with T4, T6)
 
-- [ ] 6. `src/log/error.rs` — InitError + InitGuard
+- [x] 6. `src/log/error.rs` — InitError + InitGuard
 
   **What to do**:
   1. Create `/Users/danny/Developer/polykit-rust/src/log/error.rs` defining:
@@ -739,7 +739,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: YES — at end of Wave 2, single commit covering T4+T5+T6 | Message: `feat(log): add core types: Level, FormatMode, ColorMode, InitError, InitGuard` | Files: src/log/level.rs, src/log/format.rs, src/log/error.rs, src/log/mod.rs
 
-- [ ] 7. `src/log/builder.rs` — LogBuilder struct + setters
+- [x] 7. `src/log/builder.rs` — LogBuilder struct + setters
 
   **What to do**:
   1. Create `/Users/danny/Developer/polykit-rust/src/log/builder.rs` defining:
@@ -810,7 +810,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: NO (combine with T8, T9 as Wave 3 commit)
 
-- [ ] 8. `src/log/console.rs` — Custom tracing Layer for console output
+- [x] 8. `src/log/console.rs` — Custom tracing Layer for console output
 
   **What to do**:
   This is the largest single task. Implement a `tracing_subscriber::Layer` that renders events to stderr with the agreed format. Break into clear sections:
@@ -919,7 +919,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: NO (combine with T7, T9)
 
-- [ ] 9. `src/log/file.rs` — File output layer (tracing-appender daily rolling)
+- [x] 9. `src/log/file.rs` — File output layer (tracing-appender daily rolling)
 
   **What to do**:
   1. Create `/Users/danny/Developer/polykit-rust/src/log/file.rs`.
