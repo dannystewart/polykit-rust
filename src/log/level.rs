@@ -1,4 +1,5 @@
 use owo_colors::AnsiColors;
+use core::str::FromStr;
 
 /// Four log levels matching Python `polykit.log` parity.
 ///
@@ -74,7 +75,7 @@ impl Level {
     /// Parse from a string (case-insensitive).
     ///
     /// Accepts: "debug", "info", "warn", "warning", "error".
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub(crate) fn parse_str(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
             "debug" => Some(Level::Debug),
             "info" => Some(Level::Info),
@@ -82,6 +83,14 @@ impl Level {
             "error" => Some(Level::Error),
             _ => None,
         }
+    }
+}
+
+impl FromStr for Level {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_str(s).ok_or(())
     }
 }
 
@@ -109,18 +118,18 @@ mod tests {
 
     #[test]
     fn from_str_case_insensitive() {
-        assert_eq!(Level::from_str("INFO"), Some(Level::Info));
-        assert_eq!(Level::from_str("info"), Some(Level::Info));
-        assert_eq!(Level::from_str("Info"), Some(Level::Info));
-        assert_eq!(Level::from_str("warning"), Some(Level::Warn));
+        assert_eq!(Level::from_str("INFO"), Ok(Level::Info));
+        assert_eq!(Level::from_str("info"), Ok(Level::Info));
+        assert_eq!(Level::from_str("Info"), Ok(Level::Info));
+        assert_eq!(Level::from_str("warning"), Ok(Level::Warn));
     }
 
     #[test]
     fn from_str_unknown_returns_none() {
-        assert_eq!(Level::from_str("critical"), None);
-        assert_eq!(Level::from_str("fatal"), None);
-        assert_eq!(Level::from_str("trace"), None);
-        assert_eq!(Level::from_str(""), None);
+        assert_eq!(Level::from_str("critical"), Err(()));
+        assert_eq!(Level::from_str("fatal"), Err(()));
+        assert_eq!(Level::from_str("trace"), Err(()));
+        assert_eq!(Level::from_str(""), Err(()));
     }
 
     #[test]

@@ -23,12 +23,7 @@ pub fn init() -> LogBuilder {
 
 pub(crate) fn install_with_config(builder: LogBuilder) -> Result<InitGuard, InitError> {
     // Idempotency: only one init() per process.
-    let exchanged = INITIALIZED.compare_exchange(
-        false,
-        true,
-        Ordering::AcqRel,
-        Ordering::Acquire,
-    );
+    let exchanged = INITIALIZED.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire);
     if exchanged.is_err() {
         return Err(InitError::AlreadyInitialized);
     }

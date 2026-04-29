@@ -1,7 +1,5 @@
-- `std::env::set_var` and `std::env::remove_var` are unsafe in this Rust 2024 project, so env-based tests need explicit `unsafe` blocks.
-- `ColorMode::Auto` should keep env precedence simple: `NO_COLOR` first, then `FORCE_COLOR`, then TTY fallback.
-- Scoped tracing tests work cleanly with `tracing::subscriber::with_default` and a custom `fmt` layer writer; this avoids global subscriber clashes.
-- Implemented `LogLevelOverride` as an RAII guard over the process-global min level using `current_min_level()`/`set_min_level()`.
-- Tests that mutate global log state must serialize with a shared `static Mutex<()>` and/or single-threaded test execution.
-- The `log` module should act as a single public aggregator: keep implementation modules private, but re-export the builder, guard/error types, level/format enums, helper functions, tracing macros, and `tracing` itself from `polykit::log`.
-- Keeping `#![warn(missing_docs)]` at crate root requires documenting every public enum variant, struct field, and public constructor if `cargo doc -D warnings` is part of verification.
+## 2026-04-29
+
+- Prefer `#[derive(Default)]` + `#[default]` for enum defaults to keep clippy quiet.
+- `std::str::FromStr` is the right home for string parsing helpers that look like `from_str`.
+- Environment-variable tests need serialization; parallel Rust tests can race on process-global env state.

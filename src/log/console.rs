@@ -6,11 +6,12 @@ use tracing_subscriber::Layer;
 
 use crate::log::builder::LogConfig;
 use crate::log::format::{ColorMode, FormatMode};
-use crate::log::level::{level_color, Level};
+use crate::log::level::{Level, level_color};
 
 pub(crate) struct ConsoleLayer {
     format: FormatMode,
     color_mode: ColorMode,
+    #[allow(dead_code)]
     min_level: Level,
     tz: jiff::tz::TimeZone,
     #[allow(dead_code)]
@@ -50,7 +51,7 @@ impl ConsoleLayer {
         let Some(level) = Level::from_tracing(*tracing_level) else {
             return Vec::new();
         };
-        if level < self.min_level {
+        if level < crate::log::init::current_min_level() {
             return Vec::new();
         }
 
@@ -102,7 +103,11 @@ where
     }
 }
 
-fn resolve_tz(warning_lock: &OnceLock<()>) -> jiff::tz::TimeZone {
+/// Resolve the timezone for log timestamps.
+///
+/// Reads the `TZ` environment variable, falling back to `America/New_York`,
+/// then UTC. Emits one-time stderr warnings on invalid values or missing data.
+pub fn resolve_tz(warning_lock: &OnceLock<()>) -> jiff::tz::TimeZone {
     if let Ok(tz_name) = std::env::var("TZ") {
         if !tz_name.is_empty() {
             match jiff::tz::TimeZone::get(&tz_name) {
@@ -227,7 +232,8 @@ impl tracing::field::Visit for MessageVisitor {
         if field.name() == "message" {
             self.message = value.to_string();
         } else {
-            self.fields.push((field.name().to_string(), value.to_string()));
+            self.fields
+                .push((field.name().to_string(), value.to_string()));
         }
     }
 }
@@ -236,33 +242,6 @@ impl tracing::field::Visit for MessageVisitor {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-
-    static TZ_TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    #[test]
-    fn resolve_tz_with_invalid_falls_back() {
-        let _guard = TZ_TEST_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("TZ", "Invalid/Bogus") };
-        let warning_lock = OnceLock::new();
-        let tz = resolve_tz(&warning_lock);
-        // If the system has a tz database, we expect America/New_York;
-        // otherwise resolve_tz falls back to UTC.
-        let expected = jiff::tz::TimeZone::get("America/New_York")
-            .unwrap_or_else(|_| jiff::tz::TimeZone::UTC);
-        assert_eq!(tz.iana_name(), expected.iana_name());
-        unsafe { std::env::remove_var("TZ") };
-    }
-
-    #[test]
-    fn resolve_tz_unset_uses_default() {
-        let _guard = TZ_TEST_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("TZ") };
-        let warning_lock = OnceLock::new();
-        let tz = resolve_tz(&warning_lock);
-        let expected = jiff::tz::TimeZone::get("America/New_York")
-            .unwrap_or_else(|_| jiff::tz::TimeZone::UTC);
-        assert_eq!(tz.iana_name(), expected.iana_name());
-    }
 
     #[test]
     fn golden_normal_info_ansi() {
@@ -327,7 +306,7 @@ mod tests {
             "2:34:09 PM".bright_black(),
             "[ERROR]".color(level_color(Level::Error)),
             "my_crate::module".blue(),
-            format!("file.rs:{}", "42".cyan()),
+            format_args!("file.rs:{}", "42".cyan()),
             "boom"
         )
         .into_bytes();
@@ -345,7 +324,9 @@ mod tests {
             "msg",
             false,
         );
-        let expected = "2:34:09 PM [DEBUG] my_crate <unknown>:0 msg\n".as_bytes().to_vec();
+        let expected = "2:34:09 PM [DEBUG] my_crate <unknown>:0 msg\n"
+            .as_bytes()
+            .to_vec();
         assert_eq!(result, expected);
     }
 
@@ -376,7 +357,8 @@ mod tests {
                 tracing::span::Id::from_u64(1)
             }
             fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
-            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+            fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {
+            }
             fn event(&self, event: &tracing::Event<'_>) {
                 let bytes = self.layer.render_event(event);
                 self.output.lock().unwrap().extend_from_slice(&bytes);
@@ -400,7 +382,7 @@ mod tests {
 
         let dispatch = tracing::dispatcher::Dispatch::new(Arc::clone(&sub));
         tracing::dispatcher::with_default(&dispatch, || {
-            tracing::info!("this should be filtered");
+            tracing::debug!("this should be filtered");
         });
 
         let output = sub.output.lock().unwrap();

@@ -1,5 +1,5 @@
-use crate::log::init::{current_min_level, set_min_level};
 use crate::log::Level;
+use crate::log::init::{current_min_level, set_min_level};
 
 /// RAII guard that temporarily overrides the global log level.
 ///

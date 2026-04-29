@@ -21,10 +21,17 @@ impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InitError::AlreadyInitialized => {
-                write!(f, "polykit::log already initialized; init() may only be called once per process")
+                write!(
+                    f,
+                    "polykit::log already initialized; init() may only be called once per process"
+                )
             }
             InitError::FileSetupFailed { path, source } => {
-                write!(f, "failed to set up log file at {}: {source}", path.display())
+                write!(
+                    f,
+                    "failed to set up log file at {}: {source}",
+                    path.display()
+                )
             }
             InitError::SetGlobalDefaultFailed(err) => {
                 write!(f, "failed to install tracing subscriber: {err}")
@@ -64,7 +71,9 @@ impl InitGuard {
     }
 
     /// Internal: guard with an optional worker.
-    pub(crate) fn with_worker_opt(worker: Option<tracing_appender::non_blocking::WorkerGuard>) -> Self {
+    pub(crate) fn with_worker_opt(
+        worker: Option<tracing_appender::non_blocking::WorkerGuard>,
+    ) -> Self {
         Self { _worker: worker }
     }
 }

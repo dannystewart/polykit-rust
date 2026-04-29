@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
 
-use crate::log::{InitError, Level};
 use crate::log::builder::LogConfig;
+use crate::log::{InitError, Level};
 
 struct MessageVisitor(String);
 
@@ -24,6 +24,7 @@ impl Visit for MessageVisitor {
 }
 
 pub(crate) struct FileLayer {
+    #[allow(dead_code)]
     pub(crate) min_level: Level,
     pub(crate) tz: jiff::tz::TimeZone,
     pub(crate) writer: tracing_appender::non_blocking::NonBlocking,
@@ -45,7 +46,13 @@ pub(crate) fn build_file_layer(
         } else {
             let dir = path
                 .parent()
-                .map(|p| if p == Path::new("") { Path::new(".") } else { p })
+                .map(|p| {
+                    if p == Path::new("") {
+                        Path::new(".")
+                    } else {
+                        p
+                    }
+                })
                 .unwrap_or(Path::new("."))
                 .to_path_buf();
             let fname = path
@@ -64,7 +71,14 @@ pub(crate) fn build_file_layer(
     let file_appender = tracing_appender::rolling::daily(&directory, &filename);
     let (writer, guard) = tracing_appender::non_blocking(file_appender);
 
-    Ok((FileLayer { min_level: config.level, tz, writer }, guard))
+    Ok((
+        FileLayer {
+            min_level: config.level,
+            tz,
+            writer,
+        },
+        guard,
+    ))
 }
 
 impl FileLayer {
@@ -79,7 +93,7 @@ impl FileLayer {
             Some(l) => l,
             None => return Vec::new(),
         };
-        if event_level < self.min_level {
+        if event_level < crate::log::init::current_min_level() {
             return Vec::new();
         }
 
@@ -203,7 +217,10 @@ mod tests {
             "hello world",
         );
         assert!(!bytes.is_empty());
-        assert!(!bytes.contains(&0x1b), "output must not contain ANSI escape bytes");
+        assert!(
+            !bytes.contains(&0x1b),
+            "output must not contain ANSI escape bytes"
+        );
     }
 
     #[test]
@@ -236,9 +253,7 @@ mod tests {
             .unwrap()
             .subsec_nanos()
             .into();
-        let log_path = PathBuf::from(format!(
-            "target/tmp/test-mkdir-{rand}/sub/log/app.log"
-        ));
+        let log_path = PathBuf::from(format!("target/tmp/test-mkdir-{rand}/sub/log/app.log"));
         let config = LogConfig {
             level: Level::Info,
             format: FormatMode::Normal,

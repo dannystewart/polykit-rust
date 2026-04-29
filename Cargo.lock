@@ -206,6 +206,7 @@ version = "0.1.0"
 dependencies = [
  "anstream",
  "jiff",
+ "log",
  "owo-colors",
  "tracing",
  "tracing-appender",

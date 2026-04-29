@@ -1417,7 +1417,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: YES — Wave 5 commit | Message: `feat(log): expose public API via module aggregator and lib root` | Files: src/log/mod.rs, src/lib.rs
 
-- [ ] 15. `tests/formatter_golden.rs` — Deterministic byte-exact formatter golden tests
+- [x] 15. `tests/formatter_golden.rs` — Deterministic byte-exact formatter golden tests
 
   **What to do**:
   Per Metis: formatter tests must be deterministic (fixed timestamp, fixed timezone, fixed writer, controlled color mode, exact expected output).
@@ -1499,7 +1499,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: NO (combine with T16, T17 as Wave 6)
 
-- [ ] 16. `tests/init_behavior.rs` — Subprocess-based init/idempotency integration tests
+- [x] 16. `tests/init_behavior.rs` — Subprocess-based init/idempotency integration tests
 
   **What to do**:
   Per Metis: in-process tests cannot reliably exercise the global subscriber init. Each test case spawns a subprocess that exercises ONE init scenario.
@@ -1695,7 +1695,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: NO (combine with T15, T17 as Wave 6)
 
-- [ ] 17. `tests/smoke.rs` — End-to-end smoke + LogLevelOverride + catch + concurrent logging
+- [x] 17. `tests/smoke.rs` — End-to-end smoke + LogLevelOverride + catch + concurrent logging
 
   **What to do**:
   Cover the remaining behaviors that don't fit naturally into golden or init categories.
