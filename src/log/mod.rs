@@ -11,3 +11,7 @@ mod format;
 mod init;
 mod level;
 mod level_override;
+
+pub use level::Level;
+pub use format::{ColorMode, FormatMode};
+pub use error::{InitError, InitGuard};

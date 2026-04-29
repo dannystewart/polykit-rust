@@ -1,0 +1,2 @@
+- `cargo test --lib format::tests` initially failed because env var mutation APIs are unsafe under edition 2024.
+- Fixed by wrapping all test env mutations in `unsafe` blocks and re-running the filtered test suite successfully.

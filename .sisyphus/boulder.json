@@ -18,6 +18,15 @@
       "agent": "Sisyphus-Junior",
       "category": "quick",
       "updated_at": "2026-04-29T11:24:16.030Z"
+    },
+    "todo:4": {
+      "task_key": "todo:4",
+      "task_label": "4",
+      "task_title": "`src/log/level.rs` — LogLevel enum + label/color tables",
+      "session_id": "ses_226ff5bd2ffeKqi00Rzct7g9B1",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-04-29T11:31:10.668Z"
     }
   }
 }

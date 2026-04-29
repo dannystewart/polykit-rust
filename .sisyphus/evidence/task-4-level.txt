@@ -1,0 +1,21 @@
+   Compiling polykit v0.1.0 (/Users/danny/Developer/polykit-rust)
+warning: function `level_color` is never used
+  --> src/log/level.rs:64:15
+   |
+64 | pub(crate) fn level_color(level: Level) -> AnsiColors {
+   |               ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `polykit` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.27s
+     Running unittests src/lib.rs (target/debug/deps/polykit-31b88a8d71b3429e)
+
+running 5 tests
+test log::level::tests::as_tracing_round_trip ... ok
+test log::level::tests::from_str_case_insensitive ... ok
+test log::level::tests::label_matches_python_parity ... ok
+test log::level::tests::from_tracing_trace_returns_none ... ok
+test log::level::tests::from_str_unknown_returns_none ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

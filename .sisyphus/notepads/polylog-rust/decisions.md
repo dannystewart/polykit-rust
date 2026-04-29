@@ -1,0 +1,2 @@
+- Added `src/log/format.rs` as the home for console format/color mode enums and their test coverage.
+- Re-exported `ColorMode` and `FormatMode` from `src/log/mod.rs` so callers can import them from `polykit::log`.
