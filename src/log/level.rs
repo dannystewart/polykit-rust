@@ -1,5 +1,5 @@
-use owo_colors::AnsiColors;
 use core::str::FromStr;
+use owo_colors::AnsiColors;
 
 /// Four log levels matching Python `polykit.log` parity.
 ///
