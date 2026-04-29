@@ -14,6 +14,7 @@ Future modules (not yet shipped): `polykit::time`, `polykit::env`, etc.
 
 ## Quickstart
 
+```rust
     use polykit::log;
 
     fn main() -> anyhow::Result<()> {
@@ -28,13 +29,10 @@ Future modules (not yet shipped): `polykit::time`, `polykit::env`, etc.
 
         Ok(())
     }
+```
 
 The `_guard` must remain in scope for the lifetime of the program (it flushes the file writer on drop).
 
 ## Requirements
 
 - Rust 1.85+ (edition 2024)
-
-## License
-
-TBD.
