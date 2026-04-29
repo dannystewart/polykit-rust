@@ -2,3 +2,4 @@
 - Re-exported `ColorMode` and `FormatMode` from `src/log/mod.rs` so callers can import them from `polykit::log`.
 - Keep level overrides process-global, not thread-local, to match the logger's shared MIN_LEVEL state and the plan's documented divergence.
 - Nested overrides restore in strict LIFO order via Drop.
+- Documented `InitError`, `Level`, and `LogLevelOverride::new` so crate-level missing-docs lint stays enabled without breaking docs generation.

@@ -1257,7 +1257,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: YES — at end of Wave 4 | Message: `feat(log): wire init, level override, and catch helper` | Files: src/log/init.rs, src/log/level_override.rs, src/log/catch.rs, src/log/level.rs (as_u8/from_u8 amendment), src/log/error.rs (with_worker_opt amendment), src/log/mod.rs
 
-- [ ] 13. `src/log/mod.rs` — Module aggregator + public re-exports
+- [x] 13. `src/log/mod.rs` — Module aggregator + public re-exports
 
   **What to do**:
   1. Replace `/Users/danny/Developer/polykit-rust/src/log/mod.rs` with the final aggregator:
@@ -1362,7 +1362,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: NO (combine with T14)
 
-- [ ] 14. `src/lib.rs` — Top-level crate doc and module re-export
+- [x] 14. `src/lib.rs` — Top-level crate doc and module re-export
 
   **What to do**:
   Replace `/Users/danny/Developer/polykit-rust/src/lib.rs` with:

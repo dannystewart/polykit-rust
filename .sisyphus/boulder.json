@@ -50,10 +50,10 @@
       "task_key": "todo:10",
       "task_label": "10",
       "task_title": "`src/log/init.rs` — `init()`, idempotency, subscriber wiring, tracing-log bridge",
-      "session_id": "ses_226ee8cb8ffey57w7Mhu9dfZxb",
+      "session_id": "ses_226e78eabffepHHYf1WLbqJpXK",
       "agent": "Sisyphus-Junior",
-      "category": "unspecified-high",
-      "updated_at": "2026-04-29T11:50:10.317Z"
+      "category": "quick",
+      "updated_at": "2026-04-29T11:56:47.425Z"
     }
   }
 }

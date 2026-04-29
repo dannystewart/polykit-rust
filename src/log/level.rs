@@ -6,9 +6,13 @@ use owo_colors::AnsiColors;
 /// by the formatter rather than rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Level {
+    /// Debug-level events.
     Debug,
+    /// Info-level events.
     Info,
+    /// Warn-level events.
     Warn,
+    /// Error-level events.
     Error,
 }
 

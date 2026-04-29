@@ -14,6 +14,7 @@ pub struct LogLevelOverride {
 }
 
 impl LogLevelOverride {
+    /// Create a new override and apply it immediately.
     pub fn new(level: Level) -> Self {
         let previous = current_min_level();
         set_min_level(level);

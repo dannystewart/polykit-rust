@@ -8,7 +8,9 @@ pub enum InitError {
     AlreadyInitialized,
     /// Failed to create the log file or its parent directory.
     FileSetupFailed {
+        /// Path that failed during log file setup.
         path: PathBuf,
+        /// Underlying I/O error.
         source: std::io::Error,
     },
     /// Failed to install the global tracing subscriber.

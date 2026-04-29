@@ -1,3 +1,4 @@
 - `cargo test --lib format::tests` initially failed because env var mutation APIs are unsafe under edition 2024.
 - Fixed by wrapping all test env mutations in `unsafe` blocks and re-running the filtered test suite successfully.
 - `cargo test --lib catch::tests` exposed an unrelated stale typo in `src/log/init.rs` (`min_level()` vs `current_min_level()`); fixing it was required before the targeted test suite could pass.
+- `cargo doc --no-deps -D warnings` surfaced missing-docs warnings in `src/log/error.rs`, `src/log/level.rs`, and `src/log/level_override.rs`; adding doc comments resolved them.
