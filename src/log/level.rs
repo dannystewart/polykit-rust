@@ -46,6 +46,27 @@ impl Level {
         }
     }
 
+    /// Encode as a `u8` for atomic storage.
+    pub(crate) const fn as_u8(self) -> u8 {
+        match self {
+            Level::Debug => 0,
+            Level::Info => 1,
+            Level::Warn => 2,
+            Level::Error => 3,
+        }
+    }
+
+    /// Decode from a `u8`.
+    pub(crate) fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Level::Debug),
+            1 => Some(Level::Info),
+            2 => Some(Level::Warn),
+            3 => Some(Level::Error),
+            _ => None,
+        }
+    }
+
     /// Parse from a string (case-insensitive).
     ///
     /// Accepts: "debug", "info", "warn", "warning", "error".

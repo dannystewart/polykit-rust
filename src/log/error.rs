@@ -12,7 +12,7 @@ pub enum InitError {
         source: std::io::Error,
     },
     /// Failed to install the global tracing subscriber.
-    SetGlobalDefaultFailed(tracing::dispatcher::SetGlobalDefaultError),
+    SetGlobalDefaultFailed(tracing_subscriber::util::TryInitError),
 }
 
 impl fmt::Display for InitError {
@@ -59,6 +59,11 @@ impl InitGuard {
     /// Internal: guard that holds a file writer worker.
     pub(crate) fn with_worker(g: tracing_appender::non_blocking::WorkerGuard) -> Self {
         Self { _worker: Some(g) }
+    }
+
+    /// Internal: guard with an optional worker.
+    pub(crate) fn with_worker_opt(worker: Option<tracing_appender::non_blocking::WorkerGuard>) -> Self {
+        Self { _worker: worker }
     }
 }
 

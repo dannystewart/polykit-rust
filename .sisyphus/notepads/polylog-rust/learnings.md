@@ -1,2 +1,5 @@
 - `std::env::set_var` and `std::env::remove_var` are unsafe in this Rust 2024 project, so env-based tests need explicit `unsafe` blocks.
 - `ColorMode::Auto` should keep env precedence simple: `NO_COLOR` first, then `FORCE_COLOR`, then TTY fallback.
+- Scoped tracing tests work cleanly with `tracing::subscriber::with_default` and a custom `fmt` layer writer; this avoids global subscriber clashes.
+- Implemented `LogLevelOverride` as an RAII guard over the process-global min level using `current_min_level()`/`set_min_level()`.
+- Tests that mutate global log state must serialize with a shared `static Mutex<()>` and/or single-threaded test execution.

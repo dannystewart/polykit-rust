@@ -1179,7 +1179,7 @@ All of the following must succeed from `/Users/danny/Developer/polykit-rust`:
 
   **Commit**: NO (combine with T10, T12)
 
-- [ ] 12. `src/log/catch.rs` — Closure-based error-catching helper
+- [x] 12. `src/log/catch.rs` — Closure-based error-catching helper
 
   **What to do**:
   1. Create `/Users/danny/Developer/polykit-rust/src/log/catch.rs`:

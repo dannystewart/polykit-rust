@@ -13,10 +13,12 @@ pub(crate) struct ConsoleLayer {
     color_mode: ColorMode,
     min_level: Level,
     tz: jiff::tz::TimeZone,
+    #[allow(dead_code)]
     tz_warning_emitted: OnceLock<()>,
 }
 
 impl ConsoleLayer {
+    #[allow(dead_code)]
     pub(crate) fn new(config: &LogConfig) -> Self {
         let tz_warning_emitted = OnceLock::new();
         let tz = resolve_tz(&tz_warning_emitted);
@@ -26,6 +28,16 @@ impl ConsoleLayer {
             min_level: config.level,
             tz,
             tz_warning_emitted,
+        }
+    }
+
+    pub(crate) fn new_with_tz(config: &LogConfig, tz: jiff::tz::TimeZone) -> Self {
+        Self {
+            format: config.format,
+            color_mode: config.color,
+            min_level: config.level,
+            tz,
+            tz_warning_emitted: OnceLock::new(),
         }
     }
 
