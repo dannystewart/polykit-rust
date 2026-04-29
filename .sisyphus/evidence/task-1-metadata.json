@@ -1,0 +1,6 @@
+{
+  "name": "polykit",
+  "edition": "2024",
+  "rust_version": "1.85",
+  "manifest_path": "/Users/danny/Developer/polykit-rust/Cargo.toml"
+}

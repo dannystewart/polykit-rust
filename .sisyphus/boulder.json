@@ -1,0 +1,23 @@
+{
+  "active_plan": "/Users/danny/Developer/polykit-rust/.sisyphus/plans/polylog-rust.md",
+  "started_at": "2026-04-29T11:18:37.361Z",
+  "session_ids": [
+    "ses_228f2028affe3ljkzvLrqj1ZKe"
+  ],
+  "session_origins": {
+    "ses_228f2028affe3ljkzvLrqj1ZKe": "direct"
+  },
+  "plan_name": "polylog-rust",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Bootstrap `polykit` library crate",
+      "session_id": "ses_227057c6affesn72db7UfFkar8",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-04-29T11:24:16.030Z"
+    }
+  }
+}
