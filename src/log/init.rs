@@ -71,8 +71,15 @@ fn resolve_tz() -> jiff::tz::TimeZone {
     match jiff::tz::TimeZone::try_system() {
         Ok(tz) => tz,
         Err(_) => {
-            eprintln!("polykit::log: could not detect system timezone; falling back to UTC");
-            jiff::tz::TimeZone::UTC
+            eprintln!(
+                "polykit::log: could not detect system timezone; falling back to America/New_York"
+            );
+            jiff::tz::TimeZone::get("America/New_York").unwrap_or_else(|_| {
+                eprintln!(
+                    "polykit::log: failed to load America/New_York timezone; falling back to UTC"
+                );
+                jiff::tz::TimeZone::UTC
+            })
         }
     }
 }
