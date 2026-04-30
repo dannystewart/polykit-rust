@@ -68,24 +68,10 @@ pub(crate) fn install_with_config(builder: LogBuilder) -> Result<InitGuard, Init
 }
 
 fn resolve_tz() -> jiff::tz::TimeZone {
-    if let Ok(tz_name) = std::env::var("TZ") {
-        if !tz_name.is_empty() {
-            if let Ok(tz) = jiff::tz::TimeZone::get(&tz_name) {
-                return tz;
-            }
-            eprintln!(
-                "polykit::log: invalid TZ env var '{}'; falling back to America/New_York",
-                tz_name
-            );
-        }
-    }
-
-    match jiff::tz::TimeZone::get("America/New_York") {
+    match jiff::tz::TimeZone::try_system() {
         Ok(tz) => tz,
         Err(_) => {
-            eprintln!(
-                "polykit::log: failed to load America/New_York timezone; falling back to UTC"
-            );
+            eprintln!("polykit::log: could not detect system timezone; falling back to UTC");
             jiff::tz::TimeZone::UTC
         }
     }
