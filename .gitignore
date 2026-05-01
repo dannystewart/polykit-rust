@@ -1,7 +1,8 @@
-/target
 **/*.rs.bk
+*.swp
 .DS_Store
 .firecrawl
 .idea/
+.sisyphus/evidence
 .vscode/
-*.swp
+/target
