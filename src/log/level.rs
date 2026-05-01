@@ -21,10 +21,10 @@ impl Level {
     /// Bracketed label used in formatted output.
     pub const fn label(self) -> &'static str {
         match self {
-            Level::Debug => "[DEBUG]",
-            Level::Info => "[INFO]",
-            Level::Warn => "[WARN]",
-            Level::Error => "[ERROR]",
+            Level::Debug => "[debug]",
+            Level::Info => "[info]",
+            Level::Warn => "[warn]",
+            Level::Error => "[error]",
         }
     }
 
