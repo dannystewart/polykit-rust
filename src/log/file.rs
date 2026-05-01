@@ -58,27 +58,17 @@ pub(crate) fn build_file_layer(
         } else {
             let dir = path
                 .parent()
-                .map(|p| {
-                    if p == Path::new("") {
-                        Path::new(".")
-                    } else {
-                        p
-                    }
-                })
+                .map(|p| if p == Path::new("") { Path::new(".") } else { p })
                 .unwrap_or(Path::new("."))
                 .to_path_buf();
-            let fname = path
-                .file_name()
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("polykit.log"));
+            let fname =
+                path.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("polykit.log"));
             (dir, fname)
         }
     };
 
-    std::fs::create_dir_all(&directory).map_err(|source| InitError::FileSetupFailed {
-        path: path.clone(),
-        source,
-    })?;
+    std::fs::create_dir_all(&directory)
+        .map_err(|source| InitError::FileSetupFailed { path: path.clone(), source })?;
 
     let file_appender = tracing_appender::rolling::daily(&directory, &filename);
     let (writer, guard) = tracing_appender::non_blocking(file_appender);
@@ -112,10 +102,7 @@ impl FileLayer {
 
         let (file_basename, line_num) = match (meta.file(), meta.line()) {
             (Some(f), Some(l)) => {
-                let basename = Path::new(f)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(f);
+                let basename = Path::new(f).file_name().and_then(|n| n.to_str()).unwrap_or(f);
                 (basename.to_owned(), l)
             }
             _ => ("<unknown>".to_owned(), 0),
@@ -158,10 +145,7 @@ mod tests {
         assert!(std::fs::create_dir_all(&dir).is_ok());
         let appender = tracing_appender::rolling::daily(&dir, "test.log");
         let (writer, _guard) = tracing_appender::non_blocking(appender);
-        FileLayer {
-            tz: jiff::tz::TimeZone::UTC,
-            writer,
-        }
+        FileLayer { tz: jiff::tz::TimeZone::UTC, writer }
     }
 
     fn render_direct(
@@ -183,10 +167,8 @@ mod tests {
 
         let (file_basename, line_num) = match (file, line) {
             (Some(f), Some(l)) => {
-                let basename = std::path::Path::new(f)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(f);
+                let basename =
+                    std::path::Path::new(f).file_name().and_then(|n| n.to_str()).unwrap_or(f);
                 (basename.to_owned(), l)
             }
             _ => ("<unknown>".to_owned(), 0),
@@ -209,9 +191,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [INFO] myapp main.rs:42: hello world\n"
-                .as_bytes()
-                .to_vec()
+            "[2024-01-02 03:04:05] [INFO] myapp main.rs:42: hello world\n".as_bytes().to_vec()
         );
     }
 
@@ -229,9 +209,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [INFO] myapp main.rs:1: ts test\n"
-                .as_bytes()
-                .to_vec()
+            "[2024-01-02 03:04:05] [INFO] myapp main.rs:1: ts test\n".as_bytes().to_vec()
         );
     }
 
@@ -306,9 +284,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [WARN] myapp warn.rs:7: something warned\n"
-                .as_bytes()
-                .to_vec()
+            "[2024-01-02 03:04:05] [WARN] myapp warn.rs:7: something warned\n".as_bytes().to_vec()
         );
     }
 
@@ -326,9 +302,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [ERROR] myapp <unknown>:0: no location\n"
-                .as_bytes()
-                .to_vec()
+            "[2024-01-02 03:04:05] [ERROR] myapp <unknown>:0: no location\n".as_bytes().to_vec()
         );
     }
 
@@ -366,9 +340,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [ERROR] myapp::core error.rs:13: boom\n"
-                .as_bytes()
-                .to_vec()
+            "[2024-01-02 03:04:05] [ERROR] myapp::core error.rs:13: boom\n".as_bytes().to_vec()
         );
     }
 }

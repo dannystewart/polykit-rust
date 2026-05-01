@@ -69,12 +69,7 @@ pub(crate) struct LogConfig {
 
 impl From<LogBuilder> for LogConfig {
     fn from(b: LogBuilder) -> Self {
-        Self {
-            level: b.level,
-            format: b.format,
-            color: b.color,
-            log_file: b.log_file,
-        }
+        Self { level: b.level, format: b.format, color: b.color, log_file: b.log_file }
     }
 }
 

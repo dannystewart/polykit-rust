@@ -131,10 +131,7 @@ mod tests {
             .finish();
 
         tracing::subscriber::with_default(subscriber, || {
-            let err = CauseError {
-                message: "top level",
-                source: TestError("inner cause"),
-            };
+            let err = CauseError { message: "top level", source: TestError("inner cause") };
 
             let result = catch("loading config", || Err::<(), _>(err));
             assert!(result.is_err());

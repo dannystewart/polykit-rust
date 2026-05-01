@@ -27,11 +27,7 @@ impl fmt::Display for InitError {
                 )
             }
             InitError::FileSetupFailed { path, source } => {
-                write!(
-                    f,
-                    "failed to set up log file at {}: {source}",
-                    path.display()
-                )
+                write!(f, "failed to set up log file at {}: {source}", path.display())
             }
             InitError::SetGlobalDefaultFailed(err) => {
                 write!(f, "failed to install tracing subscriber: {err}")

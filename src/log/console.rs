@@ -16,11 +16,7 @@ pub(crate) struct ConsoleLayer {
 
 impl ConsoleLayer {
     pub(crate) fn new_with_tz(config: &LogConfig, tz: jiff::tz::TimeZone) -> Self {
-        Self {
-            format: config.format,
-            color_mode: config.color,
-            tz,
-        }
+        Self { format: config.format, color_mode: config.color, tz }
     }
 
     pub(crate) fn render_event(&self, event: &tracing::Event<'_>) -> Vec<u8> {
@@ -43,14 +39,11 @@ impl ConsoleLayer {
             let _ = write!(&mut msg, " {}={}", k, v);
         }
 
-        let ts = jiff::Zoned::now()
-            .with_time_zone(self.tz.clone())
-            .strftime("%-I:%M:%S %p")
-            .to_string();
+        let ts =
+            jiff::Zoned::now().with_time_zone(self.tz.clone()).strftime("%-I:%M:%S %p").to_string();
 
-        let use_ansi = self
-            .color_mode
-            .should_emit_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()));
+        let use_ansi =
+            self.color_mode.should_emit_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()));
 
         match self.format {
             FormatMode::Simple => format_simple(level, &msg, use_ansi),
@@ -85,26 +78,16 @@ where
 }
 
 fn format_simple(level: Level, msg: &str, use_ansi: bool) -> Vec<u8> {
-    let line = if use_ansi && level >= Level::Warn {
-        msg.bold().to_string()
-    } else {
-        msg.to_string()
-    };
+    let line =
+        if use_ansi && level >= Level::Warn { msg.bold().to_string() } else { msg.to_string() };
     format!("{}\n", line).into_bytes()
 }
 
 fn format_normal(level: Level, ts: &str, msg: &str, use_ansi: bool) -> Vec<u8> {
-    let ts_str = if use_ansi {
-        ts.bright_black().to_string()
-    } else {
-        ts.to_string()
-    };
+    let ts_str = if use_ansi { ts.bright_black().to_string() } else { ts.to_string() };
     let label = level.label();
-    let label_str = if use_ansi {
-        label.color(level_color(level)).to_string()
-    } else {
-        label.to_string()
-    };
+    let label_str =
+        if use_ansi { label.color(level_color(level)).to_string() } else { label.to_string() };
     format!("{} {} {}\n", ts_str, label_str, msg).into_bytes()
 }
 
@@ -117,30 +100,14 @@ fn format_context(
     msg: &str,
     use_ansi: bool,
 ) -> Vec<u8> {
-    let ts_str = if use_ansi {
-        ts.bright_black().to_string()
-    } else {
-        ts.to_string()
-    };
+    let ts_str = if use_ansi { ts.bright_black().to_string() } else { ts.to_string() };
     let label = level.label();
-    let label_str = if use_ansi {
-        label.color(level_color(level)).to_string()
-    } else {
-        label.to_string()
-    };
-    let target_str = if use_ansi {
-        target.blue().to_string()
-    } else {
-        target.to_string()
-    };
+    let label_str =
+        if use_ansi { label.color(level_color(level)).to_string() } else { label.to_string() };
+    let target_str = if use_ansi { target.blue().to_string() } else { target.to_string() };
 
     let file_basename = file
-        .map(|f| {
-            std::path::Path::new(f)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(f)
-        })
+        .map(|f| std::path::Path::new(f).file_name().and_then(|n| n.to_str()).unwrap_or(f))
         .unwrap_or("<unknown>");
     let line_num = line.unwrap_or(0);
 
@@ -160,10 +127,7 @@ struct MessageVisitor {
 
 impl MessageVisitor {
     fn new() -> Self {
-        Self {
-            message: String::new(),
-            fields: Vec::new(),
-        }
+        Self { message: String::new(), fields: Vec::new() }
     }
 }
 
@@ -181,8 +145,7 @@ impl tracing::field::Visit for MessageVisitor {
         if field.name() == "message" {
             self.message = value.to_string();
         } else {
-            self.fields
-                .push((field.name().to_string(), value.to_string()));
+            self.fields.push((field.name().to_string(), value.to_string()));
         }
     }
 }
@@ -198,13 +161,9 @@ mod tests {
         let ts = "2:34:09 PM";
         let msg = "hello world";
         let result = format_normal(level, ts, msg, true);
-        let expected = format!(
-            "{} {} {}\n",
-            ts.bright_black(),
-            "[INFO]".color(level_color(level)),
-            msg
-        )
-        .into_bytes();
+        let expected =
+            format!("{} {} {}\n", ts.bright_black(), "[INFO]".color(level_color(level)), msg)
+                .into_bytes();
         assert_eq!(result, expected);
     }
 
@@ -264,18 +223,9 @@ mod tests {
 
     #[test]
     fn golden_context_missing_file_line() {
-        let result = format_context(
-            Level::Debug,
-            "2:34:09 PM",
-            "my_crate",
-            None,
-            None,
-            "msg",
-            false,
-        );
-        let expected = "2:34:09 PM [DEBUG] my_crate <unknown>:0 msg\n"
-            .as_bytes()
-            .to_vec();
+        let result =
+            format_context(Level::Debug, "2:34:09 PM", "my_crate", None, None, "msg", false);
+        let expected = "2:34:09 PM [DEBUG] my_crate <unknown>:0 msg\n".as_bytes().to_vec();
         assert_eq!(result, expected);
     }
 
@@ -325,10 +275,7 @@ mod tests {
             tz: jiff::tz::TimeZone::UTC,
         };
 
-        let sub = Arc::new(CapturingSubscriber {
-            layer,
-            output: Mutex::new(Vec::new()),
-        });
+        let sub = Arc::new(CapturingSubscriber { layer, output: Mutex::new(Vec::new()) });
 
         let dispatch = tracing::dispatcher::Dispatch::new(Arc::clone(&sub));
         tracing::dispatcher::with_default(&dispatch, || {

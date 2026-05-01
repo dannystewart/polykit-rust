@@ -50,9 +50,7 @@ pub(crate) fn install_with_config(builder: LogBuilder) -> Result<InitGuard, Init
     };
 
     // Compose and try to install the global subscriber.
-    let subscriber = tracing_subscriber::registry()
-        .with(console_layer)
-        .with(file_layer_opt);
+    let subscriber = tracing_subscriber::registry().with(console_layer).with(file_layer_opt);
 
     if let Err(e) = subscriber.try_init() {
         INITIALIZED.store(false, Ordering::Release);
