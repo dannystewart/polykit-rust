@@ -78,8 +78,7 @@ where
 }
 
 fn format_simple(level: Level, msg: &str, use_ansi: bool) -> Vec<u8> {
-    let line =
-        if use_ansi && level >= Level::Warn { msg.bold().to_string() } else { msg.to_string() };
+    let line = if use_ansi { msg.color(level_color(level)).to_string() } else { msg.to_string() };
     format!("{}\n", line).into_bytes()
 }
 
@@ -88,7 +87,9 @@ fn format_normal(level: Level, ts: &str, msg: &str, use_ansi: bool) -> Vec<u8> {
     let label = level.label();
     let label_str =
         if use_ansi { label.color(level_color(level)).to_string() } else { label.to_string() };
-    format!("{} {} {}\n", ts_str, label_str, msg).into_bytes()
+    let msg_str =
+        if use_ansi { msg.color(level_color(level)).to_string() } else { msg.to_string() };
+    format!("{} {} {}\n", ts_str, label_str, msg_str).into_bytes()
 }
 
 fn format_context(
@@ -117,7 +118,10 @@ fn format_context(
         format!("{}:{}", file_basename, line_num)
     };
 
-    format!("{} {} {} {} {}\n", ts_str, label_str, target_str, loc, msg).into_bytes()
+    let msg_str =
+        if use_ansi { msg.color(level_color(level)).to_string() } else { msg.to_string() };
+
+    format!("{} {} {} {} {}\n", ts_str, label_str, target_str, loc, msg_str).into_bytes()
 }
 
 struct MessageVisitor {
@@ -161,9 +165,13 @@ mod tests {
         let ts = "2:34:09 PM";
         let msg = "hello world";
         let result = format_normal(level, ts, msg, true);
-        let expected =
-            format!("{} {} {}\n", ts.bright_black(), "[INFO]".color(level_color(level)), msg)
-                .into_bytes();
+        let expected = format!(
+            "{} {} {}\n",
+            ts.bright_black(),
+            level.label().color(level_color(level)),
+            msg.color(level_color(level))
+        )
+        .into_bytes();
         assert_eq!(result, expected);
     }
 
@@ -173,7 +181,7 @@ mod tests {
         let ts = "2:34:09 PM";
         let msg = "hello world";
         let result = format_normal(level, ts, msg, false);
-        let expected = format!("{} {} {}\n", ts, "[INFO]", msg).into_bytes();
+        let expected = format!("{} {} {}\n", ts, level.label(), msg).into_bytes();
         assert_eq!(result, expected);
     }
 
@@ -185,16 +193,16 @@ mod tests {
     }
 
     #[test]
-    fn golden_simple_warn_ansi_is_bold() {
+    fn golden_simple_warn_ansi_is_level_colored() {
         let result = format_simple(Level::Warn, "warning!", true);
-        let expected = format!("{}\n", "warning!".bold()).into_bytes();
+        let expected = format!("{}\n", "warning!".color(level_color(Level::Warn))).into_bytes();
         assert_eq!(result, expected);
     }
 
     #[test]
-    fn golden_simple_info_ansi_is_not_bold() {
+    fn golden_simple_info_ansi_is_level_colored() {
         let result = format_simple(Level::Info, "info msg", true);
-        let expected = "info msg\n".as_bytes().to_vec();
+        let expected = format!("{}\n", "info msg".color(level_color(Level::Info))).into_bytes();
         assert_eq!(result, expected);
     }
 
@@ -212,10 +220,26 @@ mod tests {
         let expected = format!(
             "{} {} {} {} {}\n",
             "2:34:09 PM".bright_black(),
-            "[ERROR]".color(level_color(Level::Error)),
+            Level::Error.label().color(level_color(Level::Error)),
             "my_crate::module".blue(),
             format_args!("file.rs:{}", "42".cyan()),
-            "boom"
+            "boom".color(level_color(Level::Error))
+        )
+        .into_bytes();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn golden_normal_multiline_message_is_level_colored() {
+        let level = Level::Debug;
+        let ts = "2:34:09 PM";
+        let msg = "line1\nline2";
+        let result = format_normal(level, ts, msg, true);
+        let expected = format!(
+            "{} {} {}\n",
+            ts.bright_black(),
+            level.label().color(level_color(level)),
+            msg.color(level_color(level))
         )
         .into_bytes();
         assert_eq!(result, expected);
@@ -225,7 +249,8 @@ mod tests {
     fn golden_context_missing_file_line() {
         let result =
             format_context(Level::Debug, "2:34:09 PM", "my_crate", None, None, "msg", false);
-        let expected = "2:34:09 PM [DEBUG] my_crate <unknown>:0 msg\n".as_bytes().to_vec();
+        let expected =
+            format!("2:34:09 PM {} my_crate <unknown>:0 msg\n", Level::Debug.label()).into_bytes();
         assert_eq!(result, expected);
     }
 
