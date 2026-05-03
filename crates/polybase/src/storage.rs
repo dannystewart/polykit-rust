@@ -42,12 +42,19 @@ pub struct ObjectMetadata {
 }
 
 /// Sort options for [`Bucket::list`].
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ListSort {
     /// Column to sort on, e.g. `name`, `updated_at`.
-    pub column: &'static str,
+    pub column: String,
     /// `asc` or `desc`.
-    pub order: &'static str,
+    pub order: String,
+}
+
+impl ListSort {
+    /// Convenience constructor accepting any string-like input.
+    pub fn new(column: impl Into<String>, order: impl Into<String>) -> Self {
+        Self { column: column.into(), order: order.into() }
+    }
 }
 
 /// Pagination + sort options for [`Bucket::list`]. All fields are optional.

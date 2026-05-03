@@ -1,12 +1,18 @@
 //! Tauri command surface.
 //!
 //! These commands are deliberately thin shims over the `polybase` core. They are wired into the
-//! Tauri runtime by the `Builder::build` method in `lib.rs`. App-specific commands (e.g.
-//! `list_personas`, `list_messages_page`) stay in the host crate; this module only ships the
-//! generic library surface.
+//! Tauri runtime by the [`crate::Builder::build`] method in `lib.rs`. App-specific commands
+//! (e.g. `list_personas`, `list_messages_page`) stay in the host crate; this module only ships
+//! the generic library surface.
 //!
-//! Most commands require the host app to have called `polybase_configure` and
-//! `polybase_set_session` first. The plugin maintains state via `tauri::State<RuntimeHandle>`.
+//! Lifecycle (host responsibility):
+//! 1. Register the plugin with `tauri::Builder::default().plugin(polybase_tauri::Builder::new().build())`.
+//! 2. In your `.setup(|app| { ... })`, build a `LocalStore` and an `OfflineQueue`, then call
+//!    [`RuntimeHandle::attach`] on the plugin's state so the polybase coordinator has them.
+//! 3. From JS, call `polybase_configure` once on app start with the Supabase URL, anon key,
+//!    optional encryption secret, and storage bucket.
+//! 4. From JS, call `polybase_set_session` whenever supabase-js issues a fresh session (sign-in,
+//!    refresh, account switch).
 //!
 //! `unreachable_pub` is allowed at the file level: `#[tauri::command]` functions must be `pub`
 //! for the macro's generated handler to find them, but they are not part of the Rust public API
@@ -21,54 +27,130 @@ use polybase::client::{Client, ClientConfig};
 use polybase::edge::{EdgeClient, EdgeRequest};
 use polybase::encryption::Encryption;
 use polybase::events::EventBus;
-use polybase::storage::Bucket;
+use polybase::kvs::Kvs;
+use polybase::offline_queue::OfflineQueue;
+use polybase::persistence::LocalStore;
+use polybase::registry::Registry;
+use polybase::storage::{Bucket, ListOptions, ListSort, ObjectEntry};
+use polybase::sync::Coordinator;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// State held by the Tauri plugin.
+///
+/// Construct via [`RuntimeHandle::default`] when registering the plugin, then call
+/// [`RuntimeHandle::attach`] during your `.setup(|app| { ... })` to plug in the `LocalStore`
+/// and `OfflineQueue` implementations.
 #[derive(Default)]
 pub struct RuntimeHandle {
-    inner: Arc<RwLock<RuntimeInner>>,
+    pub(crate) inner: Arc<RwLock<RuntimeInner>>,
 }
 
 #[derive(Default)]
-struct RuntimeInner {
-    client: Option<Client>,
-    sessions: Option<SessionStore>,
-    encryption: Option<Encryption>,
-    events: EventBus,
+pub(crate) struct RuntimeInner {
+    pub(crate) client: Option<Client>,
+    pub(crate) sessions: Option<SessionStore>,
+    pub(crate) encryption: Option<Encryption>,
+    pub(crate) events: EventBus,
+    pub(crate) registry: Arc<Registry>,
+    pub(crate) local: Option<Arc<dyn LocalStore>>,
+    pub(crate) queue: Option<Arc<dyn OfflineQueue>>,
+    pub(crate) coordinator: Option<Coordinator>,
+    pub(crate) kvs: Option<Kvs>,
 }
 
 impl RuntimeHandle {
+    /// Build an empty runtime handle. The plugin uses this internally; consumers don't
+    /// normally need to construct it directly.
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Attach the host-provided [`LocalStore`] and [`OfflineQueue`] implementations. Must
+    /// be called BEFORE `polybase_configure` so the resulting coordinator has them in hand.
+    /// Calling more than once replaces the previous attachment (useful for tests).
+    pub async fn attach(&self, local: Arc<dyn LocalStore>, queue: Arc<dyn OfflineQueue>) {
+        let mut guard = self.inner.write().await;
+        guard.local = Some(local);
+        guard.queue = Some(queue);
+    }
+
+    /// Borrow the shared [`EventBus`] so the host app can spawn its own subscribers
+    /// (typically [`crate::EventForwarder::spawn`] to relay events to JS).
+    pub async fn events(&self) -> EventBus {
+        self.inner.read().await.events.clone()
+    }
+
+    /// Replace the entity registry. Use this if your app needs a custom registration set
+    /// beyond the built-in KVS entity. The default registry already has KVS registered.
+    pub async fn set_registry(&self, registry: Arc<Registry>) {
+        self.inner.write().await.registry = registry;
+    }
+
+    /// Borrow the active [`Coordinator`] if one has been built (i.e. after both `attach`
+    /// and `polybase_configure` have completed).
+    pub async fn coordinator(&self) -> Option<Coordinator> {
+        self.inner.read().await.coordinator.clone()
+    }
 }
 
-/// Errors surfaced to the JS layer as strings.
 fn to_command_error<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
 /// `polybase_configure` — initialize the client + session store + optional encryption from a
-/// JSON configuration object provided by the frontend.
+/// JSON configuration object provided by the frontend. Builds the [`Coordinator`] as a side
+/// effect IF [`RuntimeHandle::attach`] has already supplied the LocalStore + OfflineQueue.
 #[tauri::command]
 pub async fn polybase_configure(
     config: ClientConfig,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
     let client = Client::new(config.clone()).map_err(to_command_error)?;
-    let bus = EventBus::new();
-    let sessions = SessionStore::new(client.clone(), bus.clone());
     let encryption = match &config.encryption_secret {
         Some(secret) => Some(Encryption::new(secret).map_err(to_command_error)?),
         None => None,
     };
+
     let mut guard = state.inner.write().await;
+    let bus = std::mem::take(&mut guard.events);
+    let sessions = SessionStore::new(client.clone(), bus.clone());
+
+    // Make sure KVS is registered so polybase_kvs_* commands work out of the box.
+    Kvs::register(&guard.registry);
+
+    let coordinator = match (guard.local.clone(), guard.queue.clone()) {
+        (Some(local), Some(queue)) => {
+            let coord = Coordinator::new(
+                client.clone(),
+                sessions.clone(),
+                guard.registry.clone(),
+                queue,
+                bus.clone(),
+                encryption.clone(),
+                local.clone(),
+            );
+            // Bridge LocalStore::switch_user into session-changed events so per-user mirrors
+            // swap automatically on sign-in / account switch.
+            let local_for_hook = local.clone();
+            sessions.on_user_changed(move |new_user| {
+                let local = local_for_hook.clone();
+                let user_id = new_user.unwrap_or("").to_owned();
+                tokio::spawn(async move {
+                    let _ = local.switch_user(&user_id).await;
+                });
+            });
+            Some(coord)
+        }
+        _ => None,
+    };
+
     guard.client = Some(client);
     guard.sessions = Some(sessions);
     guard.encryption = encryption;
     guard.events = bus;
+    guard.kvs = coordinator.as_ref().map(|c| Kvs::new(c.clone()));
+    guard.coordinator = coordinator;
     Ok(())
 }
 
@@ -101,6 +183,22 @@ pub async fn polybase_clear_session(state: tauri::State<'_, RuntimeHandle>) -> R
         .ok_or_else(|| "polybase not configured".to_string())?;
     sessions.clear_session().await.map_err(to_command_error)?;
     Ok(())
+}
+
+/// `polybase_current_session` — read the active session payload from Rust. Used by the JS
+/// layer to bootstrap UI state without reaching into supabase-js's storage directly.
+#[tauri::command]
+pub async fn polybase_current_session(
+    state: tauri::State<'_, RuntimeHandle>,
+) -> Result<Option<SessionPayload>, String> {
+    let sessions = state
+        .inner
+        .read()
+        .await
+        .sessions
+        .clone()
+        .ok_or_else(|| "polybase not configured".to_string())?;
+    Ok(sessions.current().await)
 }
 
 /// `polybase_edge_call` — generic Edge Function call used for any `*-write` function.
@@ -188,6 +286,29 @@ pub async fn polybase_decrypt(
     encryption.decrypt(&ciphertext, user_uuid).map_err(to_command_error)
 }
 
+/// `polybase_kvs_get` — read a single KVS row from the local mirror. Returns `null` when the
+/// key is unset or tombstoned.
+#[derive(Debug, Deserialize)]
+pub struct KvsGetArgs {
+    pub namespace: String,
+    pub key: String,
+}
+
+#[tauri::command]
+pub async fn polybase_kvs_get(
+    args: KvsGetArgs,
+    state: tauri::State<'_, RuntimeHandle>,
+) -> Result<Option<serde_json::Value>, String> {
+    let kvs = state
+        .inner
+        .read()
+        .await
+        .kvs
+        .clone()
+        .ok_or_else(|| "polybase coordinator not attached".to_string())?;
+    kvs.get::<serde_json::Value>(&args.namespace, &args.key).await.map_err(to_command_error)
+}
+
 /// `polybase_kvs_set` — write a single KVS row (PostgREST upsert).
 #[derive(Debug, Deserialize)]
 pub struct KvsSetArgs {
@@ -198,10 +319,18 @@ pub struct KvsSetArgs {
 }
 
 #[tauri::command]
-pub async fn polybase_kvs_set(_args: KvsSetArgs) -> Result<(), String> {
-    // Wired up once a Coordinator instance is plumbed through `RuntimeHandle`. For now this is
-    // a placeholder that returns a clear error if invoked.
-    Err("polybase_kvs_set not yet wired (pending Coordinator wiring in plugin state)".into())
+pub async fn polybase_kvs_set(
+    args: KvsSetArgs,
+    state: tauri::State<'_, RuntimeHandle>,
+) -> Result<(), String> {
+    let kvs = state
+        .inner
+        .read()
+        .await
+        .kvs
+        .clone()
+        .ok_or_else(|| "polybase coordinator not attached".to_string())?;
+    kvs.set(&args.namespace, &args.key, &args.value, args.version).await.map_err(to_command_error)
 }
 
 /// `polybase_kvs_delete` — soft-delete a KVS row.
@@ -213,8 +342,18 @@ pub struct KvsDeleteArgs {
 }
 
 #[tauri::command]
-pub async fn polybase_kvs_delete(_args: KvsDeleteArgs) -> Result<(), String> {
-    Err("polybase_kvs_delete not yet wired (pending Coordinator wiring in plugin state)".into())
+pub async fn polybase_kvs_delete(
+    args: KvsDeleteArgs,
+    state: tauri::State<'_, RuntimeHandle>,
+) -> Result<(), String> {
+    let kvs = state
+        .inner
+        .read()
+        .await
+        .kvs
+        .clone()
+        .ok_or_else(|| "polybase coordinator not attached".to_string())?;
+    kvs.delete(&args.namespace, &args.key, args.version).await.map_err(to_command_error)
 }
 
 /// `polybase_storage_upload` — upload bytes to the configured bucket.
@@ -231,13 +370,7 @@ pub async fn polybase_storage_upload(
     args: StorageUploadArgs,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
-    let (client, sessions) = {
-        let guard = state.inner.read().await;
-        let client = guard.client.clone().ok_or_else(|| "polybase not configured".to_string())?;
-        let sessions =
-            guard.sessions.clone().ok_or_else(|| "polybase not configured".to_string())?;
-        (client, sessions)
-    };
+    let (client, sessions) = require_client_and_session(&state).await?;
     let session = sessions.current().await.ok_or_else(|| "no active session".to_string())?;
     let bucket_name = client.config().storage_bucket_or_default().to_string();
     let bucket = Bucket::new(client, bucket_name);
@@ -259,13 +392,7 @@ pub async fn polybase_storage_download(
     path: String,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<Vec<u8>, String> {
-    let (client, sessions) = {
-        let guard = state.inner.read().await;
-        let client = guard.client.clone().ok_or_else(|| "polybase not configured".to_string())?;
-        let sessions =
-            guard.sessions.clone().ok_or_else(|| "polybase not configured".to_string())?;
-        (client, sessions)
-    };
+    let (client, sessions) = require_client_and_session(&state).await?;
     let session = sessions.current().await.ok_or_else(|| "no active session".to_string())?;
     let bucket_name = client.config().storage_bucket_or_default().to_string();
     let bucket = Bucket::new(client, bucket_name);
@@ -279,15 +406,73 @@ pub async fn polybase_storage_delete(
     path: String,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
-    let (client, sessions) = {
-        let guard = state.inner.read().await;
-        let client = guard.client.clone().ok_or_else(|| "polybase not configured".to_string())?;
-        let sessions =
-            guard.sessions.clone().ok_or_else(|| "polybase not configured".to_string())?;
-        (client, sessions)
-    };
+    let (client, sessions) = require_client_and_session(&state).await?;
     let session = sessions.current().await.ok_or_else(|| "no active session".to_string())?;
     let bucket_name = client.config().storage_bucket_or_default().to_string();
     let bucket = Bucket::new(client, bucket_name);
     bucket.delete(&path, &session.access_token).await.map_err(to_command_error)
+}
+
+/// `polybase_storage_list` — list objects under a prefix in the configured bucket.
+#[derive(Debug, Deserialize, Default)]
+pub struct StorageListArgs {
+    pub prefix: String,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub offset: Option<u32>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub sort_column: Option<String>,
+    #[serde(default)]
+    pub sort_order: Option<String>,
+}
+
+#[tauri::command]
+pub async fn polybase_storage_list(
+    args: StorageListArgs,
+    state: tauri::State<'_, RuntimeHandle>,
+) -> Result<Vec<ObjectEntry>, String> {
+    let (client, sessions) = require_client_and_session(&state).await?;
+    let session = sessions.current().await.ok_or_else(|| "no active session".to_string())?;
+    let bucket_name = client.config().storage_bucket_or_default().to_string();
+    let bucket = Bucket::new(client, bucket_name);
+    let sort_by = args
+        .sort_column
+        .map(|column| ListSort::new(column, args.sort_order.unwrap_or_else(|| "asc".into())));
+    let options =
+        ListOptions { limit: args.limit, offset: args.offset, search: args.search, sort_by };
+    bucket.list(&args.prefix, options, &session.access_token).await.map_err(to_command_error)
+}
+
+/// `polybase_storage_signed_url` — mint a time-limited signed URL for a private object.
+#[derive(Debug, Deserialize)]
+pub struct StorageSignedUrlArgs {
+    pub path: String,
+    pub expires_in_seconds: u32,
+}
+
+#[tauri::command]
+pub async fn polybase_storage_signed_url(
+    args: StorageSignedUrlArgs,
+    state: tauri::State<'_, RuntimeHandle>,
+) -> Result<String, String> {
+    let (client, sessions) = require_client_and_session(&state).await?;
+    let session = sessions.current().await.ok_or_else(|| "no active session".to_string())?;
+    let bucket_name = client.config().storage_bucket_or_default().to_string();
+    let bucket = Bucket::new(client, bucket_name);
+    bucket
+        .create_signed_url(&args.path, args.expires_in_seconds, &session.access_token)
+        .await
+        .map_err(to_command_error)
+}
+
+async fn require_client_and_session(
+    state: &tauri::State<'_, RuntimeHandle>,
+) -> Result<(Client, SessionStore), String> {
+    let guard = state.inner.read().await;
+    let client = guard.client.clone().ok_or_else(|| "polybase not configured".to_string())?;
+    let sessions = guard.sessions.clone().ok_or_else(|| "polybase not configured".to_string())?;
+    Ok((client, sessions))
 }

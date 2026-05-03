@@ -13,8 +13,7 @@
 //! - [`encryption`] — AES-256-GCM with HKDF-SHA256, wire-compatible with PolyBase Swift.
 //! - [`errors`] — Top-level [`PolyError`] plus per-subsystem error types.
 //! - [`events`] — Broadcast channels for sync/auth/realtime/queue state changes.
-//! - `kvs` — Typed key-value rows replacing iCloud KVS-style preferences (crate-internal until
-//!   wired through `polybase-tauri`).
+//! - [`kvs`] — Typed key-value rows replacing iCloud KVS-style preferences.
 //! - [`offline_queue`] — Trait + reducer for persistent retry queue.
 //! - [`persistence`] — [`LocalStore`] trait so the core does not depend on sqlx.
 //! - [`registry`] — Entity registration, field maps, parent relations, write-path policy.
@@ -30,7 +29,7 @@ pub mod edge;
 pub mod encryption;
 pub mod errors;
 pub mod events;
-pub(crate) mod kvs;
+pub mod kvs;
 pub mod offline_queue;
 pub mod persistence;
 pub mod registry;
@@ -44,6 +43,7 @@ pub use client::{Client, ClientConfig};
 pub use errors::{
     EdgeError, OfflineQueueError, PolyError, PullError, PushError, RegistryError, StorageError,
 };
+pub use kvs::{Kvs, KvsChange, KvsRow};
 pub use offline_queue::{MemoryQueue, OfflineQueue, QueuedOperation, QueuedOperationKind};
 pub use persistence::{LocalStore, NullLocalStore, Record, VersionRow};
 pub use registry::{ColumnDef, EntityConfig, ParentRelation, Registry, WritePath};
