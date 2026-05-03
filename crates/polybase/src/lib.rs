@@ -97,8 +97,9 @@
 //! - [`registry`] — Entity registration, field maps, parent relations, write-path policy.
 //! - [`storage`] — Supabase Storage REST adapter.
 //! - [`sync`] — Coordinator, push (PostgREST + Edge), pull, reconcile, echo tracker.
-//! - `realtime` (feature `realtime`) — Phoenix WebSocket subscriber for `postgres_changes`
-//!   (crate-internal until the transport ships).
+//! - [`realtime`] (feature `realtime`) — Hardened Phoenix WebSocket subscriber for
+//!   `postgres_changes` with internal reconnect, heartbeat reply tracking, exponential backoff
+//!   with jitter, and stale-connection detection.
 
 pub mod auth;
 pub mod client;
@@ -115,7 +116,7 @@ pub mod storage;
 pub mod sync;
 
 #[cfg(feature = "realtime")]
-pub(crate) mod realtime;
+pub mod realtime;
 
 pub use client::{Client, ClientConfig};
 pub use errors::{

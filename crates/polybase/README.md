@@ -26,6 +26,7 @@ through PostgREST. Some things genuinely belong on the server.
 | [`encryption`](src/encryption.rs) | AES-256-GCM with HKDF-SHA256, wire-compatible with PolyBase Swift. | Field-level encryption. |
 | [`edge`](src/edge.rs) | Typed Edge Function client (idempotency keys, structured errors). | Calling `*-write` Edge Functions. |
 | [`storage`](src/storage.rs) | Supabase Storage REST adapter (upload, download, list, signed URLs). | File attachments. |
+| [`realtime`](src/realtime/mod.rs) | Hardened Phoenix WebSocket client with internal reconnect, heartbeat reply tracking, and stale-connection detection. | Live `postgres_changes` for sync. |
 | [`events`](src/events.rs) | Broadcast channels for sync / auth / queue / KVS events. | Reacting to backend changes. |
 | [`offline_queue`](src/offline_queue/mod.rs) | Persistent retry queue trait + reducer. | Customizing offline replay. |
 | [`persistence`](src/persistence.rs) | `LocalStore` trait — local mirror abstraction. | Plugging in a non-SQLite store. |
@@ -113,8 +114,12 @@ The [`Coordinator`](src/sync/coordinator.rs) ties them together.
 
 ## Features
 
-- `realtime` (default off) — Phoenix WebSocket subscriber for `postgres_changes`. Currently
-  crate-internal until the transport ships.
+- `realtime` (default on) — [`SupabaseRealtimeTransport`](src/realtime/mod.rs): hardened
+  Phoenix WebSocket subscriber with internal reconnect (250 ms first attempt, exponential
+  backoff with ±20% jitter), heartbeat reply tracking, and stale-connection detection via
+  liveness probes. The transport survives socket churn transparently — the `Subscription`
+  receivers stay valid across reconnects. Disable with `default-features = false` if you only
+  need pull/push.
 
 ## License
 
