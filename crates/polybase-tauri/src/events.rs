@@ -13,9 +13,17 @@ pub struct EventForwarder;
 impl EventForwarder {
     /// Subscribe to `bus` and forward events under `polybase:<kind>` event names. The returned
     /// task handle keeps the forwarder alive; drop it to stop forwarding.
-    pub fn spawn<R: Runtime>(handle: AppHandle<R>, bus: &EventBus) -> tokio::task::JoinHandle<()> {
+    ///
+    /// Spawned via [`tauri::async_runtime::spawn`] so the caller does not need to be inside a
+    /// Tokio runtime context — this is important because Tauri's `setup` closure runs on the
+    /// main thread before the runtime is `current`, so a bare `tokio::spawn` would panic with
+    /// "there is no reactor running".
+    pub fn spawn<R: Runtime>(
+        handle: AppHandle<R>,
+        bus: &EventBus,
+    ) -> tauri::async_runtime::JoinHandle<()> {
         let mut rx = bus.subscribe();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             while let Ok(event) = rx.recv().await {
                 let event_name = topic_for(&event);
                 let _ = handle.emit(event_name, &event);
