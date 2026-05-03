@@ -1,10 +1,21 @@
 //! Typed Edge Function client.
 //!
-//! Mirrors the contract established in Tauri Prism's `supabase/functions/_shared/mutation/`:
-//! - URL shape: `{base}/functions/v1/{function}/v1/{op}` (op-style routing)
-//! - Auth: `Authorization: Bearer {jwt}` + `apikey: {anon}`
-//! - Response: `{ success, data | error: { code, message }, request_id }`
-//! - Idempotency: callers may set or auto-generate an `Idempotency-Key` header (UUIDv7)
+//! Mirrors the wire contract used by Tauri Prism's mutation Edge Functions
+//! (`messages-write`, `conversations-write`, `attachments-write`, `personas-write`):
+//!
+//! - URL shape: `{base}/functions/v1/{function}/v1/{op}` (op-style routing).
+//! - Auth: `Authorization: Bearer {jwt}` + `apikey: {anon}`.
+//! - Body: `{ "payload": <caller_payload> }` — the Edge Function handlers destructure
+//!   `body.payload` and pass it into operation handlers. Sending the payload at root would
+//!   give every handler an `undefined` payload and immediately error. The wrapper is locked
+//!   in by [`tests::body_wraps_caller_payload_in_envelope`] so any future refactor that
+//!   accidentally drops it gets caught at `cargo test` time.
+//! - Idempotency / correlation: `Idempotency-Key` and `X-Request-Id` headers (UUIDv7
+//!   auto-generated when callers don't supply them). Today's Edge Functions read
+//!   `payload.idempotency_key` from the body, not the header — callers that need de-dup
+//!   should still embed the key inside their payload. The headers are forward compatibility
+//!   for a future server-side cutover to header-based correlation.
+//! - Response envelope: `{ success, data | error: { code, message, details? }, request_id }`.
 //!
 //! Errors are classified into [`crate::errors::EdgeError`] variants so the offline queue can
 //! decide which calls to retry, drop, or surface.
@@ -135,6 +146,7 @@ impl EdgeClient {
             request.idempotency_key.clone().unwrap_or_else(|| Uuid::now_v7().to_string());
         let request_id = request.request_id.clone().unwrap_or_else(|| Uuid::now_v7().to_string());
 
+        let body = wrap_body(&request.payload);
         let resp = self
             .client
             .http()
@@ -143,7 +155,7 @@ impl EdgeClient {
             .header("Authorization", format!("Bearer {access_token}"))
             .header(IDEMPOTENCY_HEADER, idempotency_key)
             .header(REQUEST_ID_HEADER, request_id.clone())
-            .json(&request.payload)
+            .json(&body)
             .send()
             .await
             .map_err(|err| {
@@ -214,6 +226,15 @@ impl EdgeClient {
     }
 }
 
+/// Wrap a caller-supplied payload in the `{ "payload": ... }` envelope that Tauri Prism's
+/// mutation Edge Function handlers destructure (e.g. `messages-write/index.ts:118` does
+/// `let body: { payload: Record<string, unknown> } = await req.json()`). Extracted as a
+/// standalone function so the wire format can be unit-tested without spinning up a real
+/// HTTP transport.
+fn wrap_body<P: Serialize>(payload: &P) -> Value {
+    serde_json::json!({ "payload": payload })
+}
+
 fn classify_error(
     function_name: &str,
     status: reqwest::StatusCode,
@@ -264,6 +285,32 @@ mod tests {
             storage_bucket: None,
         })
         .unwrap()
+    }
+
+    #[test]
+    fn body_wraps_caller_payload_in_envelope() {
+        // Locks the wire contract: every mutation Edge Function in Tauri Prism reads
+        // `body.payload` directly. Sending the payload at root would break all four of
+        // them. If you ever need to break this, update messages-write, conversations-write,
+        // attachments-write, and personas-write in lockstep.
+        let payload = serde_json::json!({ "id": "abc", "content": "hi" });
+        let body = wrap_body(&payload);
+        assert_eq!(body, serde_json::json!({ "payload": { "id": "abc", "content": "hi" } }));
+    }
+
+    #[test]
+    fn body_wrapper_preserves_typed_payloads() {
+        // Same envelope shape works for arbitrary Serialize types, not just untyped Values.
+        #[derive(Serialize)]
+        struct Send {
+            conversation_id: &'static str,
+            content: &'static str,
+        }
+        let body = wrap_body(&Send { conversation_id: "c", content: "hi" });
+        assert_eq!(
+            body,
+            serde_json::json!({ "payload": { "conversation_id": "c", "content": "hi" } })
+        );
     }
 
     #[test]
