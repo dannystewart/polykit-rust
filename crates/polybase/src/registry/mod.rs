@@ -135,6 +135,18 @@ pub struct EntityConfig {
     pub scope: TableScope,
     /// PostgREST or Edge Function for mutations.
     pub write_path: WritePath,
+    /// Comma-separated column list to use as the `on_conflict=` target for PostgREST upserts.
+    ///
+    /// Defaults to `"id"` because every chat-style entity (Conversation, Message, Persona,
+    /// etc.) has a single-column `id` primary key. Entities with a composite primary key —
+    /// notably the KVS table whose PK is `(user_id, namespace, key)` — must override this so
+    /// the upsert lines up with an actual unique / exclusion constraint. Otherwise PostgREST
+    /// returns Postgres error `42P10` ("there is no unique or exclusion constraint matching
+    /// the ON CONFLICT specification").
+    ///
+    /// Ignored for entities routed through [`WritePath::Edge`] (Edge Functions own their own
+    /// conflict logic).
+    pub conflict_target: &'static str,
 }
 
 impl EntityConfig {
@@ -150,6 +162,7 @@ impl EntityConfig {
             factory: None,
             scope: TableScope::Synced,
             write_path: WritePath::PostgREST,
+            conflict_target: "id",
         }
     }
 
@@ -165,6 +178,7 @@ impl EntityConfig {
             factory: None,
             scope: TableScope::LocalOnly,
             write_path: WritePath::PostgREST, // unused for local-only
+            conflict_target: "id",
         }
     }
 
@@ -207,6 +221,14 @@ impl EntityConfig {
     /// Route writes for this entity through an Edge Function instead of direct PostgREST.
     pub fn write_via_edge(mut self, function: &'static str, default_op: &'static str) -> Self {
         self.write_path = WritePath::Edge { function, default_op };
+        self
+    }
+
+    /// Override the comma-separated `on_conflict=` columns sent on PostgREST upserts. Required
+    /// for entities whose primary key is composite (e.g. KVS uses `"id,user_id"`). Defaults to
+    /// `"id"` for chat-style entities with a single-column primary key.
+    pub fn conflict_target(mut self, target: &'static str) -> Self {
+        self.conflict_target = target;
         self
     }
 
@@ -370,6 +392,18 @@ mod tests {
     fn encrypted_columns_filtered() {
         let cfg = messages_config();
         assert_eq!(cfg.encrypted_columns(), vec!["content"]);
+    }
+
+    #[test]
+    fn synced_default_conflict_target_is_id() {
+        let cfg = EntityConfig::synced("conversations", "Conversation");
+        assert_eq!(cfg.conflict_target, "id");
+    }
+
+    #[test]
+    fn conflict_target_builder_overrides_default() {
+        let cfg = EntityConfig::synced("kvs", "Kvs").conflict_target("id,user_id");
+        assert_eq!(cfg.conflict_target, "id,user_id");
     }
 
     #[test]

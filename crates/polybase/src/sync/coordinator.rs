@@ -190,7 +190,15 @@ impl Coordinator {
 
         let result = match config.write_path {
             WritePath::PostgREST => {
-                self.inner.pusher.upsert(table, record.clone(), &session.access_token).await
+                self.inner
+                    .pusher
+                    .upsert(
+                        table,
+                        record.clone(),
+                        config.conflict_target,
+                        &session.access_token,
+                    )
+                    .await
             }
             WritePath::Edge { function, default_op } => {
                 let chosen_op = op.unwrap_or(default_op);

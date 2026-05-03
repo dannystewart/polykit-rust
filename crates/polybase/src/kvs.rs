@@ -80,6 +80,12 @@ pub fn kvs_entity_config() -> EntityConfig {
         ])
         .user_id_column("user_id")
         .include_user_id(true)
+        // The Supabase `kvs` table primary key is `(user_id, namespace, key)` and a
+        // separate `unique (id, user_id)` constraint backs the synthetic `{namespace}::{key}`
+        // id slot the local mirror uses. PostgREST upserts must target the latter so the
+        // single-row payload (which always carries `id` and `user_id`) lines up cleanly.
+        // See `crates/polybase/migrations/0001_kvs.sql` for the schema.
+        .conflict_target("id,user_id")
 }
 
 /// Encode a `(namespace, key)` pair into the synthetic `id` slot used by the local mirror.
@@ -240,6 +246,16 @@ mod tests {
         assert_eq!(cfg.table_name, KVS_TABLE);
         assert!(cfg.column_names().contains(&"namespace"));
         assert!(cfg.column_names().contains(&"value"));
+    }
+
+    #[test]
+    fn entity_config_uses_composite_conflict_target() {
+        // Must align with the Supabase `unique (id, user_id)` constraint defined in
+        // `crates/polybase/migrations/0001_kvs.sql`. Sending `on_conflict=id` (the default
+        // for chat-style entities with a single-column PK) returns Postgres `42P10` because
+        // `id` alone is not unique on the kvs table — the PK is `(user_id, namespace, key)`.
+        let cfg = kvs_entity_config();
+        assert_eq!(cfg.conflict_target, "id,user_id");
     }
 
     #[test]

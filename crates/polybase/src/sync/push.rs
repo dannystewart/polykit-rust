@@ -25,12 +25,18 @@ impl Pusher {
 
     /// Upsert a single row to `{table}` via PostgREST.
     ///
+    /// `conflict_target` is the comma-separated column list for PostgREST's `on_conflict`
+    /// query parameter and must match an actual unique / exclusion constraint on the table.
+    /// Most entities pass `"id"`; entities with a composite primary key (e.g. KVS uses
+    /// `"id,user_id"`) override via [`crate::registry::EntityConfig::conflict_target`].
+    ///
     /// CRITICAL ORDERING: marks echo BEFORE awaiting the network call so realtime cannot
     /// race ahead and re-deliver our own write into the merge pipeline.
     pub(crate) async fn upsert(
         &self,
         table: &str,
         record: Map<String, Value>,
+        conflict_target: &str,
         access_token: &str,
     ) -> Result<(), PolyError> {
         let entity_id = record.get("id").and_then(Value::as_str).ok_or_else(|| {
@@ -51,7 +57,7 @@ impl Pusher {
             .header("apikey", &self.client.config().supabase_anon_key)
             .header("Authorization", format!("Bearer {access_token}"))
             .header("Prefer", "resolution=merge-duplicates,return=minimal")
-            .query(&[("on_conflict", "id")])
+            .query(&[("on_conflict", conflict_target)])
             .json(&vec![record])
             .send()
             .await?;
