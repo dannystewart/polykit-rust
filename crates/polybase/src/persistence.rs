@@ -1,8 +1,8 @@
 //! Local persistence abstraction.
 //!
 //! polybase does not depend on `sqlx` directly. Instead, apps either implement [`LocalStore`]
-//! themselves (for an existing storage layer) or pull in [`polybase-sqlite`] for a default
-//! sqlx + SQLite implementation matching the Tauri Prism schema.
+//! themselves (for an existing storage layer) or pull in the sibling `polybase-sqlite` crate
+//! for a default sqlx + SQLite implementation matching the Tauri Prism schema.
 //!
 //! The trait operates on opaque records (`serde_json::Map<String, Value>`) so it can serve as
 //! the lingua franca between the registry/sync engine and any underlying store. Callers map

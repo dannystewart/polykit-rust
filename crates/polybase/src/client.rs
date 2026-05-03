@@ -12,8 +12,8 @@ use crate::errors::PolyError;
 
 /// Static configuration for the Supabase project this client talks to.
 ///
-/// `encryption_secret` is optional here — encryption can also be configured separately via
-/// [`crate::encryption::Encryption::configure`]. Storing it on the config makes single-shot
+/// `encryption_secret` is optional here — encryption can also be built separately via
+/// [`crate::encryption::Encryption::new`]. Storing it on the config makes single-shot
 /// `Client::configure_full(...)` ergonomic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientConfig {

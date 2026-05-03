@@ -1,6 +1,7 @@
 [package]
 name = "tauri-plugin-polybase"
 description = "Tauri 2 plugin wiring polybase into a Tauri app: command surface, event surface, store-backed session and offline queue."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

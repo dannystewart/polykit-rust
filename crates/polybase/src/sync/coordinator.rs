@@ -3,9 +3,9 @@
 //! Reads the registered [`crate::registry::WritePath`] for the entity's table to decide whether
 //! the mutation flows through:
 //! - [`crate::edge::EdgeClient`] (synced chat-style entities), or
-//! - [`crate::sync::push::Pusher`] (KVS, device_tokens, other PostgREST-friendly tables).
+//! - the internal `sync::push::Pusher` (KVS, `device_tokens`, other PostgREST-friendly tables).
 //!
-//! Either way, the [`crate::sync::echo::EchoTracker`] is marked before the network call so the
+//! Either way, the internal `sync::echo::EchoTracker` is marked before the network call so the
 //! realtime subscriber suppresses the rebound event for our own write.
 //!
 //! When an [`Encryption`] is wired in, the coordinator transparently encrypts every column that
@@ -142,12 +142,12 @@ impl Coordinator {
     /// 3. Maps remote → local column names and writes to the local mirror first. If the local
     ///    write fails, the network call is NOT attempted and the error propagates.
     /// 4. Dispatches to the network per the registered [`WritePath`]:
-    ///    - `WritePath::PostgREST` → [`crate::sync::push::Pusher`] upsert.
+    ///    - `WritePath::PostgREST` → internal `sync::push::Pusher` upsert.
     ///    - `WritePath::Edge { function, default_op }` → [`EdgeClient`] call to
     ///      `{function}/v1/{op}`. The op is taken from `op` when supplied, falling back to
     ///      `default_op`. PostgREST entities ignore `op`.
     /// 5. Either dispatch path marks the echo tracker BEFORE the network call (critical
-    ///    ordering — see [`EchoTracker`]).
+    ///    ordering — `sync::echo::EchoTracker` is the gatekeeper).
     /// 6. On transient failure (5xx, transport, forbidden), the operation is enqueued for
     ///    offline replay and `Ok(())` is returned. On permanent failure, the error is
     ///    returned and the operation is NOT enqueued. Either way, the local mirror has
@@ -192,12 +192,7 @@ impl Coordinator {
             WritePath::PostgREST => {
                 self.inner
                     .pusher
-                    .upsert(
-                        table,
-                        record.clone(),
-                        config.conflict_target,
-                        &session.access_token,
-                    )
+                    .upsert(table, record.clone(), config.conflict_target, &session.access_token)
                     .await
             }
             WritePath::Edge { function, default_op } => {

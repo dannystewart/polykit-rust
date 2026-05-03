@@ -9,8 +9,9 @@
 //!
 //! ```ignore
 //! use std::sync::Arc;
-//! use polybase::{LocalStore, NullLocalStore, OfflineQueue, MemoryQueue};
-//! use polybase_tauri::{Builder as PolyBaseBuilder, EventForwarder, FileBackedQueue, RuntimeHandle};
+//! use polybase::{LocalStore, NullLocalStore, OfflineQueue};
+//! use tauri::Manager;
+//! use tauri_plugin_polybase::{Builder as PolyBaseBuilder, EventForwarder, FileBackedQueue, RuntimeHandle};
 //!
 //! tauri::Builder::default()
 //!     .plugin(PolyBaseBuilder::new().build())

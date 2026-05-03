@@ -1,6 +1,7 @@
 [package]
 name = "polybase"
 description = "Hybrid Supabase library: typed Edge Function client, registry-driven sync engine, realtime, KVS, encryption, and offline queue. Sibling to PolyBase (Swift)."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -5,6 +5,49 @@
 //! flags), parent relationships for hierarchy bumping, an optional factory for deserializing
 //! remote rows, and — new in v2 — the [`WritePath`] policy that decides whether mutations flow
 //! through PostgREST or through an Edge Function.
+//!
+//! # Registration pattern
+//!
+//! Build a [`Registry`] once at startup and register every entity the app cares about. The
+//! [`crate::sync::Coordinator`] consults it on every persist / delete to decide where to
+//! dispatch the mutation.
+//!
+//! ```no_run
+//! use std::sync::Arc;
+//! use polybase::{ColumnDef, EntityConfig, ParentRelation, Registry};
+//!
+//! let registry = Arc::new(Registry::new());
+//!
+//! // Synced entity routed through an Edge Function (the heavyweight chat path).
+//! registry.register(
+//!     EntityConfig::synced("messages", "Message")
+//!         .columns([
+//!             ColumnDef::synced("id", "id", "id", "TEXT", "string", false),
+//!             ColumnDef::synced("content", "content", "content", "TEXT", "string", true), // encrypted
+//!             ColumnDef::synced("version", "version", "version", "INTEGER", "integer", false),
+//!             ColumnDef::synced("deleted", "deleted", "deleted", "INTEGER", "boolean", false),
+//!         ])
+//!         .parent(ParentRelation::new("conversations", "conversation_id"))
+//!         .write_via_edge("messages-write", "send"),
+//! );
+//!
+//! // Synced entity with a composite PK that goes direct via PostgREST. The conflict target
+//! // must match an actual unique / exclusion constraint on the Supabase table — see
+//! // [`EntityConfig::conflict_target`] and the `kvs` migration in this crate.
+//! registry.register(
+//!     EntityConfig::synced("kvs", "Kvs")
+//!         .columns([
+//!             ColumnDef::synced("id", "id", "id", "TEXT", "string", false),
+//!             ColumnDef::synced("namespace", "namespace", "namespace", "TEXT", "string", false),
+//!             ColumnDef::synced("key", "key", "key", "TEXT", "string", false),
+//!             ColumnDef::synced("value", "value", "value", "TEXT", "jsonb", false),
+//!         ])
+//!         .conflict_target("id,user_id"), // PK is (user_id, namespace, key); unique(id, user_id) backs upserts.
+//! );
+//! ```
+//!
+//! [`crate::Kvs::register`] does the second registration for you idempotently — only register
+//! `kvs` manually when you want to override columns or write-path for some reason.
 
 use std::collections::HashMap;
 

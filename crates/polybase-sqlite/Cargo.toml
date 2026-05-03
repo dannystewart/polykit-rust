@@ -1,6 +1,7 @@
 [package]
 name = "polybase-sqlite"
 description = "Default LocalStore implementation for polybase, backed by sqlx + SQLite. Per-user database files."
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
