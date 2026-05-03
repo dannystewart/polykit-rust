@@ -3,7 +3,7 @@ resolver = "3"
 members = [
     "crates/polylog",
     "crates/polybase",
-    "crates/polybase-tauri",
+    "crates/tauri-plugin-polybase",
     "crates/polybase-sqlite",
 ]
 

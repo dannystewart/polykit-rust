@@ -1,8 +1,9 @@
 //! Tauri 2 plugin wiring [`polybase`] into a Tauri app.
 //!
-//! The plugin exposes a unified command surface and emits events on the JS side under the
-//! `polybase:` topic prefix, so the frontend can react to session, sync, queue, and KVS
-//! changes without holding its own Supabase HTTP stack for non-auth surfaces.
+//! The plugin exposes a unified command surface under the `plugin:polybase|*` namespace and
+//! emits events on the JS side under the `polybase:` topic prefix, so the frontend can react
+//! to session, sync, queue, and KVS changes without holding its own Supabase HTTP stack for
+//! non-auth surfaces.
 //!
 //! # Wiring
 //!
@@ -28,9 +29,12 @@
 //!     .run(tauri::generate_context!())?;
 //! ```
 //!
-//! After setup completes, the JS layer must call `polybase_configure` once with the
-//! Supabase URL / anon key / optional encryption secret / storage bucket, then call
-//! `polybase_set_session` whenever supabase-js issues a fresh session.
+//! Then add `"polybase:default"` to the app's capabilities (or pick individual `polybase:allow-*`
+//! entries) so JS is allowed to invoke the plugin commands.
+//!
+//! After setup completes, the JS layer must call `invoke("plugin:polybase|configure", ...)` once
+//! with the Supabase URL / anon key / optional encryption secret / storage bucket, then call
+//! `invoke("plugin:polybase|set_session", ...)` whenever supabase-js issues a fresh session.
 
 mod commands;
 mod events;
@@ -61,21 +65,21 @@ impl Builder {
     pub fn build<R: Runtime>(self) -> TauriPlugin<R> {
         PluginBuilder::new(self.name)
             .invoke_handler(tauri::generate_handler![
-                commands::polybase_configure,
-                commands::polybase_set_session,
-                commands::polybase_clear_session,
-                commands::polybase_current_session,
-                commands::polybase_edge_call,
-                commands::polybase_encrypt,
-                commands::polybase_decrypt,
-                commands::polybase_kvs_get,
-                commands::polybase_kvs_set,
-                commands::polybase_kvs_delete,
-                commands::polybase_storage_upload,
-                commands::polybase_storage_download,
-                commands::polybase_storage_delete,
-                commands::polybase_storage_list,
-                commands::polybase_storage_signed_url,
+                commands::configure,
+                commands::set_session,
+                commands::clear_session,
+                commands::current_session,
+                commands::edge_call,
+                commands::encrypt,
+                commands::decrypt,
+                commands::kvs_get,
+                commands::kvs_set,
+                commands::kvs_delete,
+                commands::storage_upload,
+                commands::storage_download,
+                commands::storage_delete,
+                commands::storage_list,
+                commands::storage_signed_url,
             ])
             .setup(|app, _api| {
                 use tauri::Manager;

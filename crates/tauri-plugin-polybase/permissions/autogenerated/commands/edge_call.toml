@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-edge-call"
+description = "Enables the edge_call command without any pre-configured scope."
+commands.allow = ["edge_call"]
+
+[[permission]]
+identifier = "deny-edge-call"
+description = "Denies the edge_call command without any pre-configured scope."
+commands.deny = ["edge_call"]

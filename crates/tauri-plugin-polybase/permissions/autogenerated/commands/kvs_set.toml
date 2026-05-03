@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-kvs-set"
+description = "Enables the kvs_set command without any pre-configured scope."
+commands.allow = ["kvs_set"]
+
+[[permission]]
+identifier = "deny-kvs-set"
+description = "Denies the kvs_set command without any pre-configured scope."
+commands.deny = ["kvs_set"]

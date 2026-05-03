@@ -1,0 +1,30 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+Default permission set for the polybase plugin.
+
+Grants every command on the plugin's surface — configure, session management, edge function
+calls, encryption helpers, KVS read/write/delete, and the full storage surface (upload,
+download, delete, list, signed URL).
+
+Apps that want a tighter permission boundary can drop `polybase:default` and pick individual
+`polybase:allow-*` entries instead.
+"""
+permissions = [
+    "allow-configure",
+    "allow-set-session",
+    "allow-clear-session",
+    "allow-current-session",
+    "allow-edge-call",
+    "allow-encrypt",
+    "allow-decrypt",
+    "allow-kvs-get",
+    "allow-kvs-set",
+    "allow-kvs-delete",
+    "allow-storage-upload",
+    "allow-storage-download",
+    "allow-storage-delete",
+    "allow-storage-list",
+    "allow-storage-signed-url",
+]

@@ -9,9 +9,9 @@
 //! 1. Register the plugin with `tauri::Builder::default().plugin(polybase_tauri::Builder::new().build())`.
 //! 2. In your `.setup(|app| { ... })`, build a `LocalStore` and an `OfflineQueue`, then call
 //!    [`RuntimeHandle::attach`] on the plugin's state so the polybase coordinator has them.
-//! 3. From JS, call `polybase_configure` once on app start with the Supabase URL, anon key,
+//! 3. From JS, call `configure` once on app start with the Supabase URL, anon key,
 //!    optional encryption secret, and storage bucket.
-//! 4. From JS, call `polybase_set_session` whenever supabase-js issues a fresh session (sign-in,
+//! 4. From JS, call `set_session` whenever supabase-js issues a fresh session (sign-in,
 //!    refresh, account switch).
 //!
 //! `unreachable_pub` is allowed at the file level: `#[tauri::command]` functions must be `pub`
@@ -67,7 +67,7 @@ impl RuntimeHandle {
     }
 
     /// Attach the host-provided [`LocalStore`] and [`OfflineQueue`] implementations. Must
-    /// be called BEFORE `polybase_configure` so the resulting coordinator has them in hand.
+    /// be called BEFORE `configure` so the resulting coordinator has them in hand.
     /// Calling more than once replaces the previous attachment (useful for tests).
     pub async fn attach(&self, local: Arc<dyn LocalStore>, queue: Arc<dyn OfflineQueue>) {
         let mut guard = self.inner.write().await;
@@ -88,7 +88,7 @@ impl RuntimeHandle {
     }
 
     /// Borrow the active [`Coordinator`] if one has been built (i.e. after both `attach`
-    /// and `polybase_configure` have completed).
+    /// and `configure` have completed).
     pub async fn coordinator(&self) -> Option<Coordinator> {
         self.inner.read().await.coordinator.clone()
     }
@@ -98,11 +98,11 @@ fn to_command_error<E: std::fmt::Display>(err: E) -> String {
     err.to_string()
 }
 
-/// `polybase_configure` — initialize the client + session store + optional encryption from a
+/// `configure` — initialize the client + session store + optional encryption from a
 /// JSON configuration object provided by the frontend. Builds the [`Coordinator`] as a side
 /// effect IF [`RuntimeHandle::attach`] has already supplied the LocalStore + OfflineQueue.
 #[tauri::command]
-pub async fn polybase_configure(
+pub async fn configure(
     config: ClientConfig,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
@@ -116,7 +116,7 @@ pub async fn polybase_configure(
     let bus = std::mem::take(&mut guard.events);
     let sessions = SessionStore::new(client.clone(), bus.clone());
 
-    // Make sure KVS is registered so polybase_kvs_* commands work out of the box.
+    // Make sure KVS is registered so the kvs_* commands work out of the box.
     Kvs::register(&guard.registry);
 
     let coordinator = match (guard.local.clone(), guard.queue.clone()) {
@@ -154,9 +154,9 @@ pub async fn polybase_configure(
     Ok(())
 }
 
-/// `polybase_set_session` — accept a fresh session payload from supabase-js.
+/// `set_session` — accept a fresh session payload from supabase-js.
 #[tauri::command]
-pub async fn polybase_set_session(
+pub async fn set_session(
     payload: SessionPayload,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
@@ -171,9 +171,9 @@ pub async fn polybase_set_session(
     Ok(())
 }
 
-/// `polybase_clear_session` — sign-out from Rust's perspective.
+/// `clear_session` — sign-out from Rust's perspective.
 #[tauri::command]
-pub async fn polybase_clear_session(state: tauri::State<'_, RuntimeHandle>) -> Result<(), String> {
+pub async fn clear_session(state: tauri::State<'_, RuntimeHandle>) -> Result<(), String> {
     let sessions = state
         .inner
         .read()
@@ -185,10 +185,10 @@ pub async fn polybase_clear_session(state: tauri::State<'_, RuntimeHandle>) -> R
     Ok(())
 }
 
-/// `polybase_current_session` — read the active session payload from Rust. Used by the JS
+/// `current_session` — read the active session payload from Rust. Used by the JS
 /// layer to bootstrap UI state without reaching into supabase-js's storage directly.
 #[tauri::command]
-pub async fn polybase_current_session(
+pub async fn current_session(
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<Option<SessionPayload>, String> {
     let sessions = state
@@ -201,7 +201,7 @@ pub async fn polybase_current_session(
     Ok(sessions.current().await)
 }
 
-/// `polybase_edge_call` — generic Edge Function call used for any `*-write` function.
+/// `edge_call` — generic Edge Function call used for any `*-write` function.
 #[derive(Debug, Deserialize)]
 pub struct EdgeCallArgs {
     pub function: String,
@@ -218,7 +218,7 @@ pub struct EdgeCallResult {
 }
 
 #[tauri::command]
-pub async fn polybase_edge_call(
+pub async fn edge_call(
     args: EdgeCallArgs,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<EdgeCallResult, String> {
@@ -248,9 +248,9 @@ pub async fn polybase_edge_call(
     Ok(EdgeCallResult { data: result.data, request_id: result.request_id })
 }
 
-/// `polybase_encrypt` — encrypt a string with the configured encryption secret for the current user.
+/// `encrypt` — encrypt a string with the configured encryption secret for the current user.
 #[tauri::command]
-pub async fn polybase_encrypt(
+pub async fn encrypt(
     plaintext: String,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<String, String> {
@@ -267,9 +267,9 @@ pub async fn polybase_encrypt(
     encryption.encrypt(&plaintext, user_uuid).map_err(to_command_error)
 }
 
-/// `polybase_decrypt` — decrypt a string with the configured encryption secret for the current user.
+/// `decrypt` — decrypt a string with the configured encryption secret for the current user.
 #[tauri::command]
-pub async fn polybase_decrypt(
+pub async fn decrypt(
     ciphertext: String,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<String, String> {
@@ -286,7 +286,7 @@ pub async fn polybase_decrypt(
     encryption.decrypt(&ciphertext, user_uuid).map_err(to_command_error)
 }
 
-/// `polybase_kvs_get` — read a single KVS row from the local mirror. Returns `null` when the
+/// `kvs_get` — read a single KVS row from the local mirror. Returns `null` when the
 /// key is unset or tombstoned.
 #[derive(Debug, Deserialize)]
 pub struct KvsGetArgs {
@@ -295,7 +295,7 @@ pub struct KvsGetArgs {
 }
 
 #[tauri::command]
-pub async fn polybase_kvs_get(
+pub async fn kvs_get(
     args: KvsGetArgs,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<Option<serde_json::Value>, String> {
@@ -309,7 +309,7 @@ pub async fn polybase_kvs_get(
     kvs.get::<serde_json::Value>(&args.namespace, &args.key).await.map_err(to_command_error)
 }
 
-/// `polybase_kvs_set` — write a single KVS row (PostgREST upsert). The next version is
+/// `kvs_set` — write a single KVS row (PostgREST upsert). The next version is
 /// derived from the local mirror by [`polybase::Kvs::set`]; callers do not pass a version.
 #[derive(Debug, Deserialize)]
 pub struct KvsSetArgs {
@@ -319,7 +319,7 @@ pub struct KvsSetArgs {
 }
 
 #[tauri::command]
-pub async fn polybase_kvs_set(
+pub async fn kvs_set(
     args: KvsSetArgs,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
@@ -333,7 +333,7 @@ pub async fn polybase_kvs_set(
     kvs.set(&args.namespace, &args.key, &args.value).await.map_err(to_command_error)
 }
 
-/// `polybase_kvs_delete` — soft-delete a KVS row. Version is derived from the local mirror.
+/// `kvs_delete` — soft-delete a KVS row. Version is derived from the local mirror.
 #[derive(Debug, Deserialize)]
 pub struct KvsDeleteArgs {
     pub namespace: String,
@@ -341,7 +341,7 @@ pub struct KvsDeleteArgs {
 }
 
 #[tauri::command]
-pub async fn polybase_kvs_delete(
+pub async fn kvs_delete(
     args: KvsDeleteArgs,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
@@ -355,7 +355,7 @@ pub async fn polybase_kvs_delete(
     kvs.delete(&args.namespace, &args.key).await.map_err(to_command_error)
 }
 
-/// `polybase_storage_upload` — upload bytes to the configured bucket.
+/// `storage_upload` — upload bytes to the configured bucket.
 #[derive(Debug, Deserialize)]
 pub struct StorageUploadArgs {
     pub path: String,
@@ -365,7 +365,7 @@ pub struct StorageUploadArgs {
 }
 
 #[tauri::command]
-pub async fn polybase_storage_upload(
+pub async fn storage_upload(
     args: StorageUploadArgs,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
@@ -385,9 +385,9 @@ pub async fn polybase_storage_upload(
         .map_err(to_command_error)
 }
 
-/// `polybase_storage_download` — fetch bytes from the configured bucket.
+/// `storage_download` — fetch bytes from the configured bucket.
 #[tauri::command]
-pub async fn polybase_storage_download(
+pub async fn storage_download(
     path: String,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<Vec<u8>, String> {
@@ -399,9 +399,9 @@ pub async fn polybase_storage_download(
     Ok(bytes.to_vec())
 }
 
-/// `polybase_storage_delete` — delete an object from the configured bucket.
+/// `storage_delete` — delete an object from the configured bucket.
 #[tauri::command]
-pub async fn polybase_storage_delete(
+pub async fn storage_delete(
     path: String,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
@@ -412,7 +412,7 @@ pub async fn polybase_storage_delete(
     bucket.delete(&path, &session.access_token).await.map_err(to_command_error)
 }
 
-/// `polybase_storage_list` — list objects under a prefix in the configured bucket.
+/// `storage_list` — list objects under a prefix in the configured bucket.
 #[derive(Debug, Deserialize, Default)]
 pub struct StorageListArgs {
     pub prefix: String,
@@ -429,7 +429,7 @@ pub struct StorageListArgs {
 }
 
 #[tauri::command]
-pub async fn polybase_storage_list(
+pub async fn storage_list(
     args: StorageListArgs,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<Vec<ObjectEntry>, String> {
@@ -445,7 +445,7 @@ pub async fn polybase_storage_list(
     bucket.list(&args.prefix, options, &session.access_token).await.map_err(to_command_error)
 }
 
-/// `polybase_storage_signed_url` — mint a time-limited signed URL for a private object.
+/// `storage_signed_url` — mint a time-limited signed URL for a private object.
 #[derive(Debug, Deserialize)]
 pub struct StorageSignedUrlArgs {
     pub path: String,
@@ -453,7 +453,7 @@ pub struct StorageSignedUrlArgs {
 }
 
 #[tauri::command]
-pub async fn polybase_storage_signed_url(
+pub async fn storage_signed_url(
     args: StorageSignedUrlArgs,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<String, String> {
