@@ -26,6 +26,7 @@ tauri-plugin-store.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [build-dependencies]
 tauri-plugin = { version = "2.4", features = ["build"] }

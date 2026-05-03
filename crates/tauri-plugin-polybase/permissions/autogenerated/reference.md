@@ -18,6 +18,8 @@ Apps that want a tighter permission boundary can drop `polybase:default` and pic
 - `allow-edge-call`
 - `allow-encrypt`
 - `allow-decrypt`
+- `allow-encrypt-batch`
+- `allow-decrypt-batch`
 - `allow-kvs-get`
 - `allow-kvs-set`
 - `allow-kvs-delete`
@@ -143,6 +145,32 @@ Denies the decrypt command without any pre-configured scope.
 <tr>
 <td>
 
+`polybase:allow-decrypt-batch`
+
+</td>
+<td>
+
+Enables the decrypt_batch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`polybase:deny-decrypt-batch`
+
+</td>
+<td>
+
+Denies the decrypt_batch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `polybase:allow-edge-call`
 
 </td>
@@ -188,6 +216,32 @@ Enables the encrypt command without any pre-configured scope.
 <td>
 
 Denies the encrypt command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`polybase:allow-encrypt-batch`
+
+</td>
+<td>
+
+Enables the encrypt_batch command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`polybase:deny-encrypt-batch`
+
+</td>
+<td>
+
+Denies the encrypt_batch command without any pre-configured scope.
 
 </td>
 </tr>

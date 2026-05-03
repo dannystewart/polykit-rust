@@ -35,17 +35,25 @@
     "DefaultPermission": {
       "description": "The default permission set of the plugin.\n\nWorks similarly to a permission with the \"default\" identifier.",
       "type": "object",
-      "required": ["permissions"],
+      "required": [
+        "permissions"
+      ],
       "properties": {
         "version": {
           "description": "The version of the permission.",
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint64",
           "minimum": 1.0
         },
         "description": {
           "description": "Human-readable description of what the permission does. Tauri convention is to use `<h4>` headings in markdown content for Tauri documentation generation purposes.",
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "permissions": {
           "description": "All permissions this set contains.",
@@ -59,7 +67,11 @@
     "PermissionSet": {
       "description": "A set of direct permissions grouped together under a new name.",
       "type": "object",
-      "required": ["description", "identifier", "permissions"],
+      "required": [
+        "description",
+        "identifier",
+        "permissions"
+      ],
       "properties": {
         "identifier": {
           "description": "A unique identifier for the permission.",
@@ -81,11 +93,16 @@
     "Permission": {
       "description": "Descriptions of explicit privileges of commands.\n\nIt can enable commands to be accessible in the frontend of the application.\n\nIf the scope is defined it can be used to fine grain control the access of individual or multiple commands.",
       "type": "object",
-      "required": ["identifier"],
+      "required": [
+        "identifier"
+      ],
       "properties": {
         "version": {
           "description": "The version of the permission.",
-          "type": ["integer", "null"],
+          "type": [
+            "integer",
+            "null"
+          ],
           "format": "uint64",
           "minimum": 1.0
         },
@@ -95,7 +112,10 @@
         },
         "description": {
           "description": "Human-readable description of what the permission does. Tauri internal convention is to use `<h4>` headings in markdown content for Tauri documentation generation purposes.",
-          "type": ["string", "null"]
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "commands": {
           "description": "Allowed or denied commands when using this permission.",
@@ -119,7 +139,10 @@
         },
         "platforms": {
           "description": "Target platforms this permission applies. By default all platforms are affected by this permission.",
-          "type": ["array", "null"],
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "$ref": "#/definitions/Target"
           }
@@ -154,14 +177,20 @@
       "properties": {
         "allow": {
           "description": "Data that defines what is allowed by the scope.",
-          "type": ["array", "null"],
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "$ref": "#/definitions/Value"
           }
         },
         "deny": {
           "description": "Data that defines what is denied by the scope. This should be prioritized by validation logic.",
-          "type": ["array", "null"],
+          "type": [
+            "array",
+            "null"
+          ],
           "items": {
             "$ref": "#/definitions/Value"
           }
@@ -228,27 +257,37 @@
         {
           "description": "MacOS.",
           "type": "string",
-          "enum": ["macOS"]
+          "enum": [
+            "macOS"
+          ]
         },
         {
           "description": "Windows.",
           "type": "string",
-          "enum": ["windows"]
+          "enum": [
+            "windows"
+          ]
         },
         {
           "description": "Linux.",
           "type": "string",
-          "enum": ["linux"]
+          "enum": [
+            "linux"
+          ]
         },
         {
           "description": "Android.",
           "type": "string",
-          "enum": ["android"]
+          "enum": [
+            "android"
+          ]
         },
         {
           "description": "iOS.",
           "type": "string",
-          "enum": ["iOS"]
+          "enum": [
+            "iOS"
+          ]
         }
       ]
     },
@@ -304,6 +343,18 @@
           "markdownDescription": "Denies the decrypt command without any pre-configured scope."
         },
         {
+          "description": "Enables the decrypt_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-decrypt-batch",
+          "markdownDescription": "Enables the decrypt_batch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the decrypt_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-decrypt-batch",
+          "markdownDescription": "Denies the decrypt_batch command without any pre-configured scope."
+        },
+        {
           "description": "Enables the edge_call command without any pre-configured scope.",
           "type": "string",
           "const": "allow-edge-call",
@@ -326,6 +377,18 @@
           "type": "string",
           "const": "deny-encrypt",
           "markdownDescription": "Denies the encrypt command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the encrypt_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-encrypt-batch",
+          "markdownDescription": "Enables the encrypt_batch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the encrypt_batch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-encrypt-batch",
+          "markdownDescription": "Denies the encrypt_batch command without any pre-configured scope."
         },
         {
           "description": "Enables the kvs_delete command without any pre-configured scope.",
@@ -436,10 +499,10 @@
           "markdownDescription": "Denies the storage_upload command without any pre-configured scope."
         },
         {
-          "description": "Default permission set for the polybase plugin.\n\nGrants every command on the plugin's surface — configure, session management, edge function\ncalls, encryption helpers, KVS read/write/delete, and the full storage surface (upload,\ndownload, delete, list, signed URL).\n\nApps that want a tighter permission boundary can drop `polybase:default` and pick individual\n`polybase:allow-*` entries instead.\n\n#### This default permission set includes:\n\n- `allow-configure`\n- `allow-set-session`\n- `allow-clear-session`\n- `allow-current-session`\n- `allow-edge-call`\n- `allow-encrypt`\n- `allow-decrypt`\n- `allow-kvs-get`\n- `allow-kvs-set`\n- `allow-kvs-delete`\n- `allow-storage-upload`\n- `allow-storage-download`\n- `allow-storage-delete`\n- `allow-storage-list`\n- `allow-storage-signed-url`",
+          "description": "Default permission set for the polybase plugin.\n\nGrants every command on the plugin's surface — configure, session management, edge function\ncalls, encryption helpers, KVS read/write/delete, and the full storage surface (upload,\ndownload, delete, list, signed URL).\n\nApps that want a tighter permission boundary can drop `polybase:default` and pick individual\n`polybase:allow-*` entries instead.\n\n#### This default permission set includes:\n\n- `allow-configure`\n- `allow-set-session`\n- `allow-clear-session`\n- `allow-current-session`\n- `allow-edge-call`\n- `allow-encrypt`\n- `allow-decrypt`\n- `allow-encrypt-batch`\n- `allow-decrypt-batch`\n- `allow-kvs-get`\n- `allow-kvs-set`\n- `allow-kvs-delete`\n- `allow-storage-upload`\n- `allow-storage-download`\n- `allow-storage-delete`\n- `allow-storage-list`\n- `allow-storage-signed-url`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permission set for the polybase plugin.\n\nGrants every command on the plugin's surface — configure, session management, edge function\ncalls, encryption helpers, KVS read/write/delete, and the full storage surface (upload,\ndownload, delete, list, signed URL).\n\nApps that want a tighter permission boundary can drop `polybase:default` and pick individual\n`polybase:allow-*` entries instead.\n\n#### This default permission set includes:\n\n- `allow-configure`\n- `allow-set-session`\n- `allow-clear-session`\n- `allow-current-session`\n- `allow-edge-call`\n- `allow-encrypt`\n- `allow-decrypt`\n- `allow-kvs-get`\n- `allow-kvs-set`\n- `allow-kvs-delete`\n- `allow-storage-upload`\n- `allow-storage-download`\n- `allow-storage-delete`\n- `allow-storage-list`\n- `allow-storage-signed-url`"
+          "markdownDescription": "Default permission set for the polybase plugin.\n\nGrants every command on the plugin's surface — configure, session management, edge function\ncalls, encryption helpers, KVS read/write/delete, and the full storage surface (upload,\ndownload, delete, list, signed URL).\n\nApps that want a tighter permission boundary can drop `polybase:default` and pick individual\n`polybase:allow-*` entries instead.\n\n#### This default permission set includes:\n\n- `allow-configure`\n- `allow-set-session`\n- `allow-clear-session`\n- `allow-current-session`\n- `allow-edge-call`\n- `allow-encrypt`\n- `allow-decrypt`\n- `allow-encrypt-batch`\n- `allow-decrypt-batch`\n- `allow-kvs-get`\n- `allow-kvs-set`\n- `allow-kvs-delete`\n- `allow-storage-upload`\n- `allow-storage-download`\n- `allow-storage-delete`\n- `allow-storage-list`\n- `allow-storage-signed-url`"
         }
       ]
     }

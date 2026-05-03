@@ -248,12 +248,12 @@ pub async fn edge_call(
     Ok(EdgeCallResult { data: result.data, request_id: result.request_id })
 }
 
-/// `encrypt` — encrypt a string with the configured encryption secret for the current user.
-#[tauri::command]
-pub async fn encrypt(
-    plaintext: String,
-    state: tauri::State<'_, RuntimeHandle>,
-) -> Result<String, String> {
+/// Resolve the current encryption context — `(encryption, user_uuid)` — for the active
+/// session. Used by every `encrypt*` / `decrypt*` command so they share the same not-configured
+/// / no-session error handling.
+async fn current_encryption_context(
+    state: &tauri::State<'_, RuntimeHandle>,
+) -> Result<(Encryption, uuid::Uuid), String> {
     let (encryption, sessions) = {
         let guard = state.inner.read().await;
         let encryption =
@@ -264,6 +264,16 @@ pub async fn encrypt(
     };
     let session = sessions.current().await.ok_or_else(|| "no active session".to_string())?;
     let user_uuid = Encryption::key_user_uuid(&session.user_id);
+    Ok((encryption, user_uuid))
+}
+
+/// `encrypt` — encrypt a string with the configured encryption secret for the current user.
+#[tauri::command]
+pub async fn encrypt(
+    plaintext: String,
+    state: tauri::State<'_, RuntimeHandle>,
+) -> Result<String, String> {
+    let (encryption, user_uuid) = current_encryption_context(&state).await?;
     encryption.encrypt(&plaintext, user_uuid).map_err(to_command_error)
 }
 
@@ -273,17 +283,39 @@ pub async fn decrypt(
     ciphertext: String,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<String, String> {
-    let (encryption, sessions) = {
-        let guard = state.inner.read().await;
-        let encryption =
-            guard.encryption.clone().ok_or_else(|| "encryption not configured".to_string())?;
-        let sessions =
-            guard.sessions.clone().ok_or_else(|| "polybase not configured".to_string())?;
-        (encryption, sessions)
-    };
-    let session = sessions.current().await.ok_or_else(|| "no active session".to_string())?;
-    let user_uuid = Encryption::key_user_uuid(&session.user_id);
+    let (encryption, user_uuid) = current_encryption_context(&state).await?;
     encryption.decrypt(&ciphertext, user_uuid).map_err(to_command_error)
+}
+
+/// `encrypt_batch` — encrypt multiple strings in one IPC round-trip. Fails the whole batch
+/// on any encryption error (a single failure here is exceptional — usually means the secret
+/// is misconfigured or the AES backend is broken).
+#[tauri::command]
+pub async fn encrypt_batch(
+    plaintexts: Vec<String>,
+    state: tauri::State<'_, RuntimeHandle>,
+) -> Result<Vec<String>, String> {
+    let (encryption, user_uuid) = current_encryption_context(&state).await?;
+    plaintexts
+        .iter()
+        .map(|plaintext| encryption.encrypt(plaintext, user_uuid).map_err(to_command_error))
+        .collect()
+}
+
+/// `decrypt_batch` — decrypt multiple strings in one IPC round-trip with per-element
+/// resilience: individual decrypt failures yield `None` for that slot rather than failing the
+/// whole batch. This matches how UI layers typically render legacy/corrupt rows (fall back to
+/// the original ciphertext) instead of blanking an entire page of messages.
+#[tauri::command]
+pub async fn decrypt_batch(
+    ciphertexts: Vec<String>,
+    state: tauri::State<'_, RuntimeHandle>,
+) -> Result<Vec<Option<String>>, String> {
+    let (encryption, user_uuid) = current_encryption_context(&state).await?;
+    Ok(ciphertexts
+        .iter()
+        .map(|ciphertext| encryption.decrypt(ciphertext, user_uuid).ok())
+        .collect())
 }
 
 /// `kvs_get` — read a single KVS row from the local mirror. Returns `null` when the

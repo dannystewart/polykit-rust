@@ -73,6 +73,8 @@ impl Builder {
                 commands::edge_call,
                 commands::encrypt,
                 commands::decrypt,
+                commands::encrypt_batch,
+                commands::decrypt_batch,
                 commands::kvs_get,
                 commands::kvs_set,
                 commands::kvs_delete,

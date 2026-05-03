@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-encrypt-batch"
+description = "Enables the encrypt_batch command without any pre-configured scope."
+commands.allow = ["encrypt_batch"]
+
+[[permission]]
+identifier = "deny-encrypt-batch"
+description = "Denies the encrypt_batch command without any pre-configured scope."
+commands.deny = ["encrypt_batch"]

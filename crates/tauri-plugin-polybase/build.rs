@@ -19,6 +19,8 @@ const COMMANDS: &[&str] = &[
     "edge_call",
     "encrypt",
     "decrypt",
+    "encrypt_batch",
+    "decrypt_batch",
     "kvs_get",
     "kvs_set",
     "kvs_delete",

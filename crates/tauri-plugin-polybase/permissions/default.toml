@@ -19,6 +19,8 @@ permissions = [
     "allow-edge-call",
     "allow-encrypt",
     "allow-decrypt",
+    "allow-encrypt-batch",
+    "allow-decrypt-batch",
     "allow-kvs-get",
     "allow-kvs-set",
     "allow-kvs-delete",
