@@ -27,4 +27,5 @@ repos:
     rev: v1.0
     hooks:
       - id: fmt
-        args: ["--manifest-path", "Cargo.toml", "--", "--config-path", "rustfmt.toml"]
+        args: ["--manifest-path", "Cargo.toml", "--all"]
+        pass_filenames: false
