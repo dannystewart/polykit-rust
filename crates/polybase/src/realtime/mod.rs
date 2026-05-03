@@ -142,7 +142,12 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    fn new(
+    /// Construct a subscription from raw channel halves. Public so alternative
+    /// [`RealtimeTransport`] implementations (e.g. test fixtures, polling backends, custom
+    /// WebSocket clients) can build a `Subscription` without going through
+    /// [`SupabaseRealtimeTransport`]. Production callers should never need this — they get
+    /// a `Subscription` from `transport.subscribe(...)`.
+    pub fn new(
         rx: broadcast::Receiver<RealtimeChange>,
         lifecycle_tx: broadcast::Sender<LifecycleEvent>,
     ) -> Self {
