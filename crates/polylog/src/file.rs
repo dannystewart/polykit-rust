@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
 
-use crate::log::builder::LogConfig;
-use crate::log::{InitError, Level};
+use crate::builder::LogConfig;
+use crate::{InitError, Level};
 
 struct MessageVisitor(String);
 
@@ -54,7 +54,7 @@ pub(crate) fn build_file_layer(
     let (directory, filename): (PathBuf, PathBuf) = {
         let path_str = path.to_string_lossy();
         if path_str.ends_with('/') || path.is_dir() {
-            (path.to_path_buf(), PathBuf::from("polykit.log"))
+            (path.to_path_buf(), PathBuf::from("polylog.log"))
         } else {
             let dir = path
                 .parent()
@@ -62,7 +62,7 @@ pub(crate) fn build_file_layer(
                 .unwrap_or(Path::new("."))
                 .to_path_buf();
             let fname =
-                path.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("polykit.log"));
+                path.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("polylog.log"));
             (dir, fname)
         }
     };
@@ -87,7 +87,7 @@ impl FileLayer {
         let Some(event_level) = Level::from_tracing(*meta.level()) else {
             return Vec::new();
         };
-        if event_level < crate::log::init::current_min_level() {
+        if event_level < crate::init::current_min_level() {
             return Vec::new();
         }
 
@@ -137,11 +137,11 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::log::builder::LogConfig;
-    use crate::log::format::{ColorMode, FormatMode};
+    use crate::builder::LogConfig;
+    use crate::format::{ColorMode, FormatMode};
 
     fn make_layer() -> FileLayer {
-        let dir = std::env::temp_dir().join("polykit-file-test-sink");
+        let dir = std::env::temp_dir().join("polylog-file-test-sink");
         assert!(std::fs::create_dir_all(&dir).is_ok());
         let appender = tracing_appender::rolling::daily(&dir, "test.log");
         let (writer, _guard) = tracing_appender::non_blocking(appender);
@@ -191,7 +191,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [INFO] myapp main.rs:42: hello world\n".as_bytes().to_vec()
+            "[2024-01-02 03:04:05] [info] myapp main.rs:42: hello world\n".as_bytes().to_vec()
         );
     }
 
@@ -209,7 +209,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [INFO] myapp main.rs:1: ts test\n".as_bytes().to_vec()
+            "[2024-01-02 03:04:05] [info] myapp main.rs:1: ts test\n".as_bytes().to_vec()
         );
     }
 
@@ -264,7 +264,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [INFO] myapp::module lib.rs:99: golden info message\n"
+            "[2024-01-02 03:04:05] [info] myapp::module lib.rs:99: golden info message\n"
                 .as_bytes()
                 .to_vec()
         );
@@ -284,7 +284,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [WARN] myapp warn.rs:7: something warned\n".as_bytes().to_vec()
+            "[2024-01-02 03:04:05] [warn] myapp warn.rs:7: something warned\n".as_bytes().to_vec()
         );
     }
 
@@ -302,7 +302,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [ERROR] myapp <unknown>:0: no location\n".as_bytes().to_vec()
+            "[2024-01-02 03:04:05] [error] myapp <unknown>:0: no location\n".as_bytes().to_vec()
         );
     }
 
@@ -320,7 +320,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [INFO] myapp unicode.rs:1: héllo wörld 日本語\n"
+            "[2024-01-02 03:04:05] [info] myapp unicode.rs:1: héllo wörld 日本語\n"
                 .as_bytes()
                 .to_vec()
         );
@@ -340,7 +340,7 @@ mod tests {
         );
         assert_eq!(
             bytes,
-            "[2024-01-02 03:04:05] [ERROR] myapp::core error.rs:13: boom\n".as_bytes().to_vec()
+            "[2024-01-02 03:04:05] [error] myapp::core error.rs:13: boom\n".as_bytes().to_vec()
         );
     }
 }

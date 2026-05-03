@@ -1,0 +1,28 @@
+[package]
+name = "polybase-tauri"
+description = "Tauri 2 plugin wiring polybase into a Tauri app: command surface, event surface, store-backed session and offline queue."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "polybase_tauri"
+
+[dependencies]
+polybase = { workspace = true, default-features = true }
+polylog.workspace = true
+
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri.workspace = true
+tauri-plugin-store.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

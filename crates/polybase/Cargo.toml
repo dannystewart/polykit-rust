@@ -1,0 +1,52 @@
+[package]
+name = "polybase"
+description = "Hybrid Supabase library: typed Edge Function client, registry-driven sync engine, realtime, KVS, encryption, and offline queue. Sibling to PolyBase (Swift)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "polybase"
+
+[features]
+default = ["realtime"]
+realtime = ["dep:tokio-tungstenite", "dep:url", "dep:futures-util"]
+
+[dependencies]
+polylog.workspace = true
+
+aes-gcm.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+futures.workspace = true
+futures-util = { workspace = true, optional = true }
+hkdf.workspace = true
+once_cell.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite = { workspace = true, optional = true }
+tracing.workspace = true
+url = { workspace = true, optional = true }
+uuid.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = [
+    "macros",
+    "rt-multi-thread",
+    "time",
+    "test-util",
+] }
+
+[lints]
+workspace = true

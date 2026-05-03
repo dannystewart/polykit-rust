@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
-use crate::log::{ColorMode, FormatMode, InitError, InitGuard, Level};
+use crate::{ColorMode, FormatMode, InitError, InitGuard, Level};
 
-/// Builder for configuring and installing the polykit logger.
+/// Builder for configuring and installing the polylog logger.
 ///
-/// Obtain one via [`crate::log::init`], then chain setters and call [`install`](LogBuilder::install).
+/// Obtain one via [`crate::init`], then chain setters and call [`install`](LogBuilder::install).
 pub struct LogBuilder {
     level: Level,
     format: FormatMode,
@@ -55,7 +55,7 @@ impl LogBuilder {
 
     /// Install the logger and return a guard that must remain in scope.
     pub fn install(self) -> Result<InitGuard, InitError> {
-        crate::log::init::install_with_config(self)
+        crate::init::install_with_config(self)
     }
 }
 

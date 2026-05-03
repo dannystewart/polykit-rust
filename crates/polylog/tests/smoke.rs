@@ -1,3 +1,5 @@
+//! Smoke tests for polylog runtime invariants via the init_harness example.
+
 use std::process::Command;
 
 fn run_harness(args: &[&str]) -> std::process::Output {
@@ -31,6 +33,6 @@ fn concurrent_logging_does_not_corrupt_lines() {
     assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
     let stderr = String::from_utf8_lossy(&out.stderr);
     let line_count =
-        stderr.lines().filter(|l| l.contains("[INFO]") && l.contains("CONCURRENT_MARKER")).count();
+        stderr.lines().filter(|l| l.contains("[info]") && l.contains("CONCURRENT_MARKER")).count();
     assert_eq!(line_count, 800, "expected 800 lines, got {line_count}: {stderr}");
 }

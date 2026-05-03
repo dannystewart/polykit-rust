@@ -5,4 +5,4 @@
 .idea/
 .sisyphus/evidence
 .vscode/
-/target
+**/target

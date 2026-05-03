@@ -3,11 +3,11 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use crate::log::builder::{LogBuilder, LogConfig};
-use crate::log::console::ConsoleLayer;
-use crate::log::error::{InitError, InitGuard};
-use crate::log::file::build_file_layer;
-use crate::log::level::Level;
+use crate::builder::{LogBuilder, LogConfig};
+use crate::console::ConsoleLayer;
+use crate::error::{InitError, InitGuard};
+use crate::file::build_file_layer;
+use crate::level::Level;
 
 /// Process-global flag: has the logger been initialized?
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -15,8 +15,8 @@ static INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Dynamic minimum log level (u8 encoding: Debug=0, Info=1, Warn=2, Error=3).
 static MIN_LEVEL: AtomicU8 = AtomicU8::new(1); // default Info
 
-/// Obtain a [`LogBuilder`] to configure and install the polykit logger.
-pub fn init() -> LogBuilder {
+/// Obtain a [`LogBuilder`] to configure and install the polylog logger.
+pub(crate) fn init() -> LogBuilder {
     LogBuilder::new()
 }
 
@@ -59,7 +59,7 @@ pub(crate) fn install_with_config(builder: LogBuilder) -> Result<InitGuard, Init
 
     // Bridge the `log` crate → tracing. Non-fatal if it fails.
     if let Err(e) = tracing_log::LogTracer::init() {
-        eprintln!("polykit::log: warning: failed to bridge log crate: {e}");
+        eprintln!("polylog: warning: failed to bridge log crate: {e}");
     }
 
     Ok(InitGuard::with_worker_opt(worker_guard))
@@ -70,12 +70,10 @@ fn resolve_tz() -> jiff::tz::TimeZone {
         Ok(tz) => tz,
         Err(_) => {
             eprintln!(
-                "polykit::log: could not detect system timezone; falling back to America/New_York"
+                "polylog: could not detect system timezone; falling back to America/New_York"
             );
             jiff::tz::TimeZone::get("America/New_York").unwrap_or_else(|_| {
-                eprintln!(
-                    "polykit::log: failed to load America/New_York timezone; falling back to UTC"
-                );
+                eprintln!("polylog: failed to load America/New_York timezone; falling back to UTC");
                 jiff::tz::TimeZone::UTC
             })
         }

@@ -3,6 +3,8 @@ use owo_colors::AnsiColors;
 
 /// Four log levels matching Python `polykit.log` parity.
 ///
+/// Sibling level set to `polykit-swift`'s `PolyLog`.
+///
 /// `tracing::Level::TRACE` is not represented — TRACE events are dropped
 /// by the formatter rather than rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -110,10 +112,10 @@ mod tests {
 
     #[test]
     fn label_matches_python_parity() {
-        assert_eq!(Level::Debug.label(), "[DEBUG]");
-        assert_eq!(Level::Info.label(), "[INFO]");
-        assert_eq!(Level::Warn.label(), "[WARN]");
-        assert_eq!(Level::Error.label(), "[ERROR]");
+        assert_eq!(Level::Debug.label(), "[debug]");
+        assert_eq!(Level::Info.label(), "[info]");
+        assert_eq!(Level::Warn.label(), "[warn]");
+        assert_eq!(Level::Error.label(), "[error]");
     }
 
     #[test]

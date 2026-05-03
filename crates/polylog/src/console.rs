@@ -4,9 +4,9 @@ use std::io::{self, Write};
 use owo_colors::OwoColorize;
 use tracing_subscriber::Layer;
 
-use crate::log::builder::LogConfig;
-use crate::log::format::{ColorMode, FormatMode};
-use crate::log::level::{Level, level_color};
+use crate::builder::LogConfig;
+use crate::format::{ColorMode, FormatMode};
+use crate::level::{Level, level_color};
 
 pub(crate) struct ConsoleLayer {
     format: FormatMode,
@@ -28,7 +28,7 @@ impl ConsoleLayer {
         let Some(level) = Level::from_tracing(*tracing_level) else {
             return Vec::new();
         };
-        if level < crate::log::init::current_min_level() {
+        if level < crate::init::current_min_level() {
             return Vec::new();
         }
 

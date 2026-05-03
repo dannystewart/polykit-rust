@@ -1,3 +1,5 @@
+//! Behavior tests for polylog init via the init_harness example.
+
 use std::process::Command;
 
 fn run_harness(args: &[&str]) -> std::process::Output {
@@ -32,7 +34,7 @@ fn pre_init_logging_does_not_panic() {
 
 #[test]
 fn file_init_creates_missing_directory() {
-    let tmp = std::env::temp_dir().join(format!("polykit-test-{}", std::process::id()));
+    let tmp = std::env::temp_dir().join(format!("polylog-test-{}", std::process::id()));
     let log = tmp.join("nested/sub/app.log");
     let _ = std::fs::remove_dir_all(&tmp);
     let out = run_harness(&["file_init_creates_dir", log.to_str().unwrap()]);

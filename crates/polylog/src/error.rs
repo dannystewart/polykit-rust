@@ -21,10 +21,7 @@ impl fmt::Display for InitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InitError::AlreadyInitialized => {
-                write!(
-                    f,
-                    "polykit::log already initialized; init() may only be called once per process"
-                )
+                write!(f, "polylog already initialized; init() may only be called once per process")
             }
             InitError::FileSetupFailed { path, source } => {
                 write!(f, "failed to set up log file at {}: {source}", path.display())
@@ -72,7 +69,7 @@ mod tests {
         let err = InitError::AlreadyInitialized;
         assert_eq!(
             err.to_string(),
-            "polykit::log already initialized; init() may only be called once per process"
+            "polylog already initialized; init() may only be called once per process"
         );
     }
 

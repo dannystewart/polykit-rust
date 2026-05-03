@@ -1,4 +1,7 @@
-use polykit::log::ColorMode;
+//! Verify ColorMode::Auto honors NO_COLOR / FORCE_COLOR env vars.
+#![allow(unsafe_code)] // env::set_var is unsafe in Rust 2024; tests deliberately mutate env.
+
+use polylog::ColorMode;
 use std::sync::{Mutex, OnceLock};
 
 fn env_lock() -> &'static Mutex<()> {

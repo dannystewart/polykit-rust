@@ -1,0 +1,27 @@
+[package]
+name = "polylog"
+description = "Branded logger built on tracing, sibling of polykit (Python) and polykit-swift (Swift)."
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "polylog"
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true
+tracing-log.workspace = true
+owo-colors.workspace = true
+jiff.workspace = true
+
+[dev-dependencies]
+log = "0.4"
+
+[lints]
+workspace = true
