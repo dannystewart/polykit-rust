@@ -144,8 +144,14 @@ impl Kvs {
         Ok(Some(typed))
     }
 
-    /// Set a value. `version` should be the next version (`current + 1`) per the contract.
-    /// On the very first write of a key, pass `version = 1`.
+    /// Set a value. The next version is computed automatically from the local mirror
+    /// (`current + 1`, or `1` for a brand-new key) so callers do not have to track it.
+    ///
+    /// Note: the version cursor lives in the local SQLite mirror. After a remote pull or
+    /// realtime push lands a fresher row, [`Self::set`] naturally picks up `remote + 1`
+    /// on the next write — so a fresh device that hasn't synced yet may briefly produce
+    /// version-1 collisions until the puller has caught it up. PostgREST's UPSERT will
+    /// resolve those by last-write-wins, which is the right behavior for KVS prefs.
     ///
     /// On success, emits [`PolyEvent::KvsChanged { deleted: false }`] (via [`Coordinator`]).
     pub async fn set<T: Serialize>(
@@ -153,25 +159,41 @@ impl Kvs {
         namespace: &str,
         key: &str,
         value: &T,
-        version: i64,
     ) -> Result<(), PolyError> {
         let id = encode_id(namespace, key);
+        let next_version = self.next_version_for(&id).await?;
         let mut record: Map<String, Value> = Map::new();
         record.insert("id".into(), Value::String(id));
         record.insert("namespace".into(), Value::String(namespace.into()));
         record.insert("key".into(), Value::String(key.into()));
         record.insert("value".into(), serde_json::to_value(value)?);
-        record.insert("version".into(), Value::Number(version.into()));
+        record.insert("version".into(), Value::Number(next_version.into()));
         record.insert("deleted".into(), Value::Bool(false));
         record.insert("updated_at".into(), Value::String(chrono::Utc::now().to_rfc3339()));
         self.coordinator.persist_change(KVS_TABLE, record).await
     }
 
-    /// Mark a key as deleted (tombstone). `version` should be the next version per the
-    /// contract. Subscribers receive [`PolyEvent::KvsChanged { deleted: true }`].
-    pub async fn delete(&self, namespace: &str, key: &str, version: i64) -> Result<(), PolyError> {
+    /// Mark a key as deleted (tombstone). The next version is computed automatically from
+    /// the local mirror. Subscribers receive [`PolyEvent::KvsChanged { deleted: true }`].
+    pub async fn delete(&self, namespace: &str, key: &str) -> Result<(), PolyError> {
         let id = encode_id(namespace, key);
-        self.coordinator.delete(KVS_TABLE, &id, version).await
+        let next_version = self.next_version_for(&id).await?;
+        self.coordinator.delete(KVS_TABLE, &id, next_version).await
+    }
+
+    /// Look up the current version of `id` in the local mirror and return `current + 1`.
+    /// Returns `1` when the row does not exist yet. Accepts both JSON-number and
+    /// JSON-string version representations so either kind of [`crate::persistence::LocalStore`]
+    /// can drive us.
+    async fn next_version_for(&self, id: &str) -> Result<i64, PolyError> {
+        let Some(row) = self.coordinator.read_record(KVS_TABLE, id).await? else {
+            return Ok(1);
+        };
+        let current = row
+            .get("version")
+            .and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+            .unwrap_or(0);
+        Ok(current + 1)
     }
 
     /// Subscribe to KVS change events (set + delete). Returns a tokio broadcast receiver

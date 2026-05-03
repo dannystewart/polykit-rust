@@ -277,7 +277,7 @@ mod tests {
 
         // First write — network is unreachable so this is the offline-replay path. The local
         // mirror still reflects the change so reads succeed.
-        kvs.set("prism", "default_model", &json!({"id": "claude-sonnet-4-5"}), 1).await.unwrap();
+        kvs.set("prism", "default_model", &json!({"id": "claude-sonnet-4-5"})).await.unwrap();
 
         let value: Option<serde_json::Value> = kvs.get("prism", "default_model").await.unwrap();
         assert_eq!(value.as_ref().and_then(|v| v.get("id")), Some(&json!("claude-sonnet-4-5")));
@@ -286,20 +286,38 @@ mod tests {
     #[tokio::test]
     async fn kvs_delete_makes_get_return_none() {
         let (_tmp, _store, _coord, kvs) = setup().await;
-        kvs.set("prism", "ephemeral", &json!(true), 1).await.unwrap();
-        kvs.delete("prism", "ephemeral", 2).await.unwrap();
+        kvs.set("prism", "ephemeral", &json!(true)).await.unwrap();
+        kvs.delete("prism", "ephemeral").await.unwrap();
         let value: Option<serde_json::Value> = kvs.get("prism", "ephemeral").await.unwrap();
         assert!(value.is_none());
     }
 
     #[tokio::test]
+    async fn kvs_set_auto_bumps_version_on_repeat_writes() {
+        let (_tmp, store, _coord, kvs) = setup().await;
+        let id = kvs::encode_id("prism", "counter");
+
+        kvs.set("prism", "counter", &json!(1)).await.unwrap();
+        let v1 = store.read_record("kvs", &id).await.unwrap().expect("present");
+        assert_eq!(v1.get("version"), Some(&json!(1)));
+
+        kvs.set("prism", "counter", &json!(2)).await.unwrap();
+        let v2 = store.read_record("kvs", &id).await.unwrap().expect("present");
+        assert_eq!(v2.get("version"), Some(&json!(2)));
+
+        kvs.set("prism", "counter", &json!(3)).await.unwrap();
+        let v3 = store.read_record("kvs", &id).await.unwrap().expect("present");
+        assert_eq!(v3.get("version"), Some(&json!(3)));
+    }
+
+    #[tokio::test]
     async fn read_record_preserves_integer_columns() {
         let (_tmp, store, _coord, kvs) = setup().await;
-        kvs.set("prism", "counter", &json!(42), 7).await.unwrap();
+        kvs.set("prism", "counter", &json!(42)).await.unwrap();
 
         let id = kvs::encode_id("prism", "counter");
         let record = store.read_record("kvs", &id).await.unwrap().expect("present");
-        assert_eq!(record.get("version"), Some(&json!(7)));
+        assert_eq!(record.get("version"), Some(&json!(1)));
         assert_eq!(record.get("deleted"), Some(&json!(0))); // SQLite booleans live as integers.
     }
 

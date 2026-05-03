@@ -309,13 +309,13 @@ pub async fn polybase_kvs_get(
     kvs.get::<serde_json::Value>(&args.namespace, &args.key).await.map_err(to_command_error)
 }
 
-/// `polybase_kvs_set` — write a single KVS row (PostgREST upsert).
+/// `polybase_kvs_set` — write a single KVS row (PostgREST upsert). The next version is
+/// derived from the local mirror by [`polybase::Kvs::set`]; callers do not pass a version.
 #[derive(Debug, Deserialize)]
 pub struct KvsSetArgs {
     pub namespace: String,
     pub key: String,
     pub value: serde_json::Value,
-    pub version: i64,
 }
 
 #[tauri::command]
@@ -330,15 +330,14 @@ pub async fn polybase_kvs_set(
         .kvs
         .clone()
         .ok_or_else(|| "polybase coordinator not attached".to_string())?;
-    kvs.set(&args.namespace, &args.key, &args.value, args.version).await.map_err(to_command_error)
+    kvs.set(&args.namespace, &args.key, &args.value).await.map_err(to_command_error)
 }
 
-/// `polybase_kvs_delete` — soft-delete a KVS row.
+/// `polybase_kvs_delete` — soft-delete a KVS row. Version is derived from the local mirror.
 #[derive(Debug, Deserialize)]
 pub struct KvsDeleteArgs {
     pub namespace: String,
     pub key: String,
-    pub version: i64,
 }
 
 #[tauri::command]
@@ -353,7 +352,7 @@ pub async fn polybase_kvs_delete(
         .kvs
         .clone()
         .ok_or_else(|| "polybase coordinator not attached".to_string())?;
-    kvs.delete(&args.namespace, &args.key, args.version).await.map_err(to_command_error)
+    kvs.delete(&args.namespace, &args.key).await.map_err(to_command_error)
 }
 
 /// `polybase_storage_upload` — upload bytes to the configured bucket.
