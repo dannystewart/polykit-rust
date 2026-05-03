@@ -92,6 +92,17 @@ impl RuntimeHandle {
     pub async fn coordinator(&self) -> Option<Coordinator> {
         self.inner.read().await.coordinator.clone()
     }
+
+    /// Borrow the active [`SessionStore`] if `configure` has run.
+    ///
+    /// Host apps that have their own free-function-style auth shims (e.g. `crate::auth::*`
+    /// in Tauri Prism, where dozens of call sites read the active session without an
+    /// `AppHandle` in scope) can grab a clone here once during their own setup and stash
+    /// it in a `OnceLock`. The plugin and the host then share a single [`SessionStore`]
+    /// instance — no mirroring, no double-invoke pattern.
+    pub async fn sessions(&self) -> Option<SessionStore> {
+        self.inner.read().await.sessions.clone()
+    }
 }
 
 fn to_command_error<E: std::fmt::Display>(err: E) -> String {
