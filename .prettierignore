@@ -1,6 +1,6 @@
 boulder.json
 bun.lockb
 package-lock.json
-**/permissions/schemas/schema.json
 pnpm-lock.yaml
+schema.json
 yarn.lock
