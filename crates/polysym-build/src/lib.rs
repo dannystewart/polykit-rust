@@ -24,16 +24,19 @@ use std::process::Command;
 pub struct SymbolSpec {
     /// SF Symbol name, e.g. `"folder.badge.plus"`.
     pub name: String,
-    /// Point size for the icon canvas. Defaults to `16` (produces 32×32 px at 2x).
+    /// Point size for the icon canvas. Defaults to `20` (produces 40×40 px at 2x).
     pub size: u32,
     /// Symbol weight. Defaults to `"regular"`.
     pub weight: String,
 }
 
 impl SymbolSpec {
-    /// Create a spec with default settings (16pt, regular weight).
+    /// Create a spec with default settings (20pt, regular weight).
+    ///
+    /// 20pt produces a 40×40 px PNG at 2x density, which macOS displays at 20×20 logical
+    /// points in menus — appropriate for macOS 26's larger menu icon convention.
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), size: 16, weight: "regular".into() }
+        Self { name: name.into(), size: 20, weight: "regular".into() }
     }
 
     /// Override the point size. PNG output will be `size * 2` pixels square (2x density).

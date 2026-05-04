@@ -33,6 +33,8 @@ tauri = { version = "...", features = ["image-png"] }  # image-png is required
 
 Call `polysym_build::generate` before `tauri_build::build`. List every SF Symbol name you want to use — these are the same names you'd use in SwiftUI's `Image(systemName:)`.
 
+Symbols are exported at 20pt by default (40×40 px at 2x), which displays at 20 logical points in macOS 26 menus. Override per-symbol with `generate_with_opts` if needed.
+
 ```rust
 fn main() {
     polysym_build::generate(&[
@@ -114,10 +116,9 @@ Then in Svelte (the return type `number[]` is accepted directly by `IconMenuItem
 
 ```ts
 import { invoke } from "@tauri-apps/api/core"
-import { getCurrentWindow } from "@tauri-apps/api/window"
 import { IconMenuItem, Menu } from "@tauri-apps/api/menu"
 
-const dark = (await getCurrentWindow().theme()) === "dark"
+const dark = window.matchMedia("(prefers-color-scheme: dark)").matches
 const trashIcon = await invoke<number[]>("sf_icon", { name: "trash", dark }).catch(() => undefined)
 
 const deleteItem = await IconMenuItem.new({
@@ -128,7 +129,7 @@ const deleteItem = await IconMenuItem.new({
 })
 ```
 
-Passing `dark` explicitly from the JS side is more reliable than letting the Rust command detect appearance via a subprocess — Tauri's window theme API is the authoritative source. The `.catch(() => undefined)` is a safe fallback: if `sf_icon` fails (e.g. in a web dev build without the Tauri runtime), the menu item renders without an icon rather than throwing.
+Passing `dark` explicitly from the JS side is more reliable than letting the Rust command detect appearance via a subprocess. `window.matchMedia("(prefers-color-scheme: dark)").matches` is evaluated by Tauri's WKWebView directly against the macOS system appearance, making it the most accurate and zero-cost source of truth. The `.catch(() => undefined)` is a safe fallback: if `sf_icon` fails (e.g. in a web dev build without the Tauri runtime), the menu item renders without an icon rather than throwing.
 
 The corresponding Tauri command signature should accept the `dark` flag and call `bytes_for`:
 
@@ -150,8 +151,8 @@ use polysym_build::SymbolSpec;
 
 fn main() {
     polysym_build::generate_with_opts(&[
-        SymbolSpec::new("trash"),                        // defaults: 16pt, regular
-        SymbolSpec::new("sidebar.left").size(14),        // 14pt → 28×28 px at 2x
+        SymbolSpec::new("trash"),                        // defaults: 20pt, regular
+        SymbolSpec::new("sidebar.left").size(16),        // 16pt → 32×32 px at 2x
         SymbolSpec::new("bold").weight("semibold"),      // semibold weight
     ]);
     tauri_build::build();
