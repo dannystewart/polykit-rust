@@ -88,11 +88,11 @@ let item = IconMenuItem::with_id(
 
 Symbol names map to methods by replacing dots and hyphens with underscores:
 
-| SF Symbol name         | Method                    |
-|------------------------|---------------------------|
-| `trash`                | `SfIcons::trash()`        |
+| SF Symbol name         | Method                         |
+|------------------------|--------------------------------|
+| `trash`                | `SfIcons::trash()`             |
 | `folder.badge.plus`    | `SfIcons::folder_badge_plus()` |
-| `bell.slash`           | `SfIcons::bell_slash()`   |
+| `bell.slash`           | `SfIcons::bell_slash()`        |
 | `square.and.pencil`    | `SfIcons::square_and_pencil()` |
 
 ### From JavaScript / Svelte (JS-side menu construction)

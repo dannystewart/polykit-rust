@@ -2856,6 +2856,9 @@ dependencies = [
 [[package]]
 name = "polysym-build"
 version = "0.2.0"
+dependencies = [
+ "image",
+]
 
 [[package]]
 name = "polyval"
