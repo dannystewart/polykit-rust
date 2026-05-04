@@ -1,10 +1,13 @@
 # polysym
 
-SF Symbol icons for native Tauri menus on macOS.
+SF Symbol icons for Tauri apps on macOS — native menus and WebView UI elements.
 
-`polysym` is two crates: **`polysym-build`** generates PNG assets from your declared symbol list at build time using [`sfsym`](https://github.com/yapstudios/sfsym), and **`polysym`** gives you a typed `SfIcons` struct at runtime to convert those assets into `tauri::image::Image` objects ready for `IconMenuItem`.
+`polysym` is two crates: **`polysym-build`** generates symbol assets at build time using [`sfsym`](https://github.com/yapstudios/sfsym), and **`polysym`** gives you a typed `SfIcons` struct at runtime to use them anywhere in your app.
 
-Light and dark variants are generated for every symbol, and the correct one is selected automatically at menu-build time based on the current system appearance.
+Two formats are generated for every symbol in your manifest:
+
+- **PNG** (light + dark variants) for native menu icons via `IconMenuItem`
+- **SVG** (single `currentColor` variant) for WebView UI elements — color is controlled by CSS, so dark mode, tinting, and hover states all work automatically
 
 ## Prerequisites
 
@@ -50,7 +53,7 @@ fn main() {
 }
 ```
 
-This runs `sfsym` and embeds the resulting PNGs in your binary. Regeneration happens automatically whenever `build.rs` changes.
+This runs `sfsym` and embeds the resulting PNGs and SVGs in your binary. Regeneration happens automatically whenever `build.rs` changes.
 
 ### 3. src/icons.rs
 
@@ -142,6 +145,58 @@ fn sf_icon(name: String, dark: bool) -> Result<Vec<u8>, String> {
 }
 ```
 
+### From JavaScript / Svelte (WebView UI elements via SVG)
+
+SVGs use `currentColor` fill, so the icon color follows the CSS `color` property of its container — no `dark` parameter needed.
+
+Add a Tauri command:
+
+```rust
+#[tauri::command]
+fn sf_svg(name: String) -> Result<String, String> {
+    icons::SfIcons::get_svg(&name)
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("sf symbol not registered: {name}"))
+}
+```
+
+Register it alongside `sf_icon` in `invoke_handler!`. Then in Svelte:
+
+```svelte
+<script lang="ts">
+  import { invoke } from "@tauri-apps/api/core"
+
+  let trashSvg = $state("")
+  invoke<string>("sf_svg", { name: "trash" }).then(svg => (trashSvg = svg))
+</script>
+
+<!-- Inline: inherits color from CSS, scales with font size -->
+<span class="icon" style="color: currentColor">{@html trashSvg}</span>
+
+<!-- Or as an image with explicit size -->
+<img src="data:image/svg+xml,{encodeURIComponent(trashSvg)}" width="20" height="20" alt="" />
+```
+
+To tint or switch appearance, just set `color` on the container:
+
+```css
+.icon { color: #333; }
+@media (prefers-color-scheme: dark) { .icon { color: #eee; } }
+```
+
+Or in a Svelte component:
+
+```svelte
+<span style="color: {isDark ? 'white' : 'black'}">{@html trashSvg}</span>
+```
+
+For convenience when you know you'll always use a symbol inline, you can also call the typed method directly from Rust before passing to the frontend:
+
+```rust
+// Returns the SVG string directly (no dynamic lookup needed)
+let svg = icons::SfIcons::trash_svg();
+```
+
 ## Custom size and weight
 
 For symbols that need different options, use `generate_with_opts` and `SymbolSpec`:
@@ -165,11 +220,12 @@ PNG output is always at 2x density: `--size N` produces an `N×2` × `N×2` pixe
 
 ## How it works
 
-1. `polysym_build::generate` calls `sfsym batch` twice — once for the black (light mode) variant and once for the white (dark mode) variant — piping all symbol export commands through stdin for maximum throughput (~800 symbols/sec).
-2. Both sets of PNGs land in Cargo's `$OUT_DIR`, never in your source tree.
-3. A `polysym_generated.rs` file is written to `$OUT_DIR` containing a `SfIcons` struct with one typed method per symbol (using `include_bytes!` with absolute paths) and a `get(name: &str)` lookup for string-based access.
-4. `polysym::include_symbols!()` expands to `include!(concat!(env!("OUT_DIR"), "/polysym_generated.rs"))`, pulling `SfIcons` into the calling module.
-5. At runtime, `SfImage::bytes()` calls `polysym::is_dark_mode()` (a one-shot `defaults read -g AppleInterfaceStyle`) and returns the appropriate byte slice.
+1. `polysym_build::generate` calls `sfsym batch` three times — black PNGs (light mode), white PNGs (dark mode), and monochrome SVGs — piping all export commands through stdin for maximum throughput (~800 symbols/sec).
+2. PNGs are post-processed: composited onto a padded transparent canvas with `@2x` Retina DPI metadata (`pHYs` chunk, 5669 px/m = 144 DPI) so `NSImage` renders them sharp without scaling. SVGs are post-processed to replace the hardcoded color with `currentColor`.
+3. All assets land in Cargo's `$OUT_DIR`, never in your source tree.
+4. A `polysym_generated.rs` file is written to `$OUT_DIR` containing a `SfIcons` struct with typed methods per symbol (`include_bytes!` for PNGs, `include_str!` for SVGs) and `get`/`get_svg` dynamic lookups.
+5. `polysym::include_symbols!()` expands to `include!(concat!(env!("OUT_DIR"), "/polysym_generated.rs"))`, pulling `SfIcons` into the calling module.
+6. At runtime, `SfImage::bytes()` calls `polysym::is_dark_mode()` (a one-shot `defaults read -g AppleInterfaceStyle`) and returns the appropriate byte slice.
 
 ## Notes
 

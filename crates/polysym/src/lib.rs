@@ -1,4 +1,4 @@
-//! Runtime support for SF Symbol icons in Tauri menus.
+//! Runtime support for SF Symbol icons in Tauri apps.
 //!
 //! After adding `polysym-build` to your `build.rs`, use this crate to pull the
 //! generated symbols into your source and convert them to Tauri images.
@@ -11,13 +11,59 @@
 //! polysym::include_symbols!();
 //! ```
 //!
-//! This brings `SfIcons` into scope in that module. Then in your menu code:
+//! This brings `SfIcons` into scope in that module.
+//!
+//! # Native menu icons (PNG)
 //!
 //! ```rust,ignore
 //! use crate::icons::SfIcons;
 //!
 //! let icon = SfIcons::trash().to_tauri_image()?;
 //! let item = IconMenuItem::with_id(app, "delete", "Delete", true, Some(icon), None::<&str>)?;
+//! ```
+//!
+//! For menus built from the JS side, expose a Tauri command:
+//!
+//! ```rust,ignore
+//! #[tauri::command]
+//! fn sf_icon(name: String, dark: bool) -> Result<Vec<u8>, String> {
+//!     icons::SfIcons::get(&name)
+//!         .map(|img| img.bytes_for(dark).to_vec())
+//!         .ok_or_else(|| format!("sf symbol not registered: {name}"))
+//! }
+//! ```
+//!
+//! # WebView UI elements (SVG)
+//!
+//! SVGs use `currentColor` fill, so the icon color follows the CSS `color`
+//! property of its container — dark mode, tinting, and states all work with
+//! pure CSS, no light/dark variants needed.
+//!
+//! Expose a Tauri command and call it from your Svelte components:
+//!
+//! ```rust,ignore
+//! #[tauri::command]
+//! fn sf_svg(name: String) -> Result<String, String> {
+//!     icons::SfIcons::get_svg(&name)
+//!         .map(|s| s.to_string())
+//!         .ok_or_else(|| format!("sf symbol not registered: {name}"))
+//! }
+//! ```
+//!
+//! In Svelte:
+//!
+//! ```svelte,ignore
+//! <script lang="ts">
+//!   import { invoke } from "@tauri-apps/api/core"
+//!   let trashSvg = $state("")
+//!   invoke<string>("sf_svg", { name: "trash" }).then(svg => trashSvg = svg)
+//! </script>
+//!
+//! <!-- inline SVG inherits color from CSS -->
+//! <span class="icon" style="color: red">{@html trashSvg}</span>
+//!
+//! <!-- or as an image via data URI -->
+//! <img src="data:image/svg+xml,{encodeURIComponent(trashSvg)}" width="20" height="20" />
 //! ```
 
 use tauri::image::Image;

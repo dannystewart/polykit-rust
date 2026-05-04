@@ -93,7 +93,7 @@ pub fn generate(symbols: &[&str]) {
     generate_with_opts(&specs);
 }
 
-/// Generate SF Symbol PNG assets with full control over each symbol's options.
+/// Generate SF Symbol PNG and SVG assets with full control over each symbol's options.
 pub fn generate_with_opts(specs: &[SymbolSpec]) {
     let sfsym = find_sfsym();
 
@@ -103,20 +103,31 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
 
     println!("cargo::rerun-if-changed=build.rs");
 
-    // Light: monochrome black. Dark: hierarchical white — monochrome mode in
-    // sfsym ignores --color and always outputs black; hierarchical respects it.
-    let light_batch = build_batch_input(specs, &symbol_dir, "light", "monochrome", "#000000");
-    let dark_batch = build_batch_input(specs, &symbol_dir, "dark", "hierarchical", "#ffffff");
+    // PNG — light: monochrome black; dark: hierarchical white.
+    // (monochrome mode in sfsym ignores --color and always outputs black;
+    // hierarchical respects it, so we use it for the white dark variant.)
+    let light_batch = build_png_batch_input(specs, &symbol_dir, "light", "monochrome", "#000000");
+    let dark_batch = build_png_batch_input(specs, &symbol_dir, "dark", "hierarchical", "#ffffff");
 
-    run_batch(&sfsym, &light_batch, "light");
-    run_batch(&sfsym, &dark_batch, "dark");
+    run_batch(&sfsym, &light_batch, "light PNG");
+    run_batch(&sfsym, &dark_batch, "dark PNG");
 
-    // Post-process: composite each symbol into its padded canvas.
+    // Post-process PNGs: composite each symbol into a padded canvas with @2x DPI metadata.
     for spec in specs {
         for variant in ["light", "dark"] {
             let path = symbol_dir.join(format!("{}.{}.png", spec.name, variant));
             apply_padding(&path, spec);
         }
+    }
+
+    // SVG — monochrome black, then replace with currentColor so CSS controls the color.
+    // A single variant is sufficient: callers style it via the CSS `color` property.
+    let svg_batch = build_svg_batch_input(specs, &symbol_dir);
+    run_batch(&sfsym, &svg_batch, "SVG");
+
+    for spec in specs {
+        let path = symbol_dir.join(format!("{}.svg", spec.name));
+        apply_svg_currentcolor(&path);
     }
 
     let generated_path = out_dir.join("polysym_generated.rs");
@@ -210,11 +221,11 @@ fn find_sfsym() -> PathBuf {
     panic!("`sfsym` not found — see cargo output for install instructions");
 }
 
-/// Build the stdin batch input for `sfsym batch` for one appearance variant.
+/// Build the stdin batch input for `sfsym batch` for one PNG appearance variant.
 ///
 /// The sfsym `--size` is `spec.inner_size()` — smaller than the final canvas
 /// to leave room for padding composited in afterwards.
-fn build_batch_input(
+fn build_png_batch_input(
     specs: &[SymbolSpec],
     symbol_dir: &Path,
     variant: &str,
@@ -237,6 +248,53 @@ fn build_batch_input(
         .unwrap();
     }
     batch
+}
+
+/// Build the stdin batch input for `sfsym batch` for SVG export.
+///
+/// Uses monochrome black at the full canvas size (no padding reduction needed —
+/// SVGs are vector and callers control size via CSS). Color is replaced with
+/// `currentColor` in a post-processing step.
+fn build_svg_batch_input(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
+    let mut batch = String::new();
+    for spec in specs {
+        let out_path = symbol_dir.join(format!("{}.svg", spec.name));
+        writeln!(
+            batch,
+            "{} -f svg --mode monochrome --size {} --weight {} --color '#000000' -o {}",
+            spec.name,
+            spec.size,
+            spec.weight,
+            out_path.display(),
+        )
+        .unwrap();
+    }
+    batch
+}
+
+/// Replace the hardcoded black fill/stroke in a sfsym SVG with `currentColor`.
+///
+/// This makes the SVG inherit its color from the CSS `color` property of its
+/// container, so dark mode, tinting, and hover states all work with pure CSS —
+/// no light/dark variants needed.
+fn apply_svg_currentcolor(path: &Path) {
+    let svg = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("failed to read SVG {}: {e}", path.display()));
+
+    // sfsym outputs #000000 for --color '#000000'. Handle both quote styles and
+    // the 3-digit shorthand, and replace both fill and stroke attributes.
+    let updated = svg
+        .replace("fill=\"#000000\"", "fill=\"currentColor\"")
+        .replace("fill=\"#000\"", "fill=\"currentColor\"")
+        .replace("fill='#000000'", "fill='currentColor'")
+        .replace("fill='#000'", "fill='currentColor'")
+        .replace("stroke=\"#000000\"", "stroke=\"currentColor\"")
+        .replace("stroke=\"#000\"", "stroke=\"currentColor\"")
+        .replace("stroke='#000000'", "stroke='currentColor'")
+        .replace("stroke='#000'", "stroke='currentColor'");
+
+    std::fs::write(path, updated)
+        .unwrap_or_else(|e| panic!("failed to write SVG {}: {e}", path.display()));
 }
 
 /// Run `sfsym batch` with the given stdin input, panicking on failure.
@@ -290,21 +348,29 @@ fn build_generated_source(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
         let method = symbol_to_method_name(&spec.name);
         let light_path = symbol_dir.join(format!("{}.light.png", spec.name));
         let dark_path = symbol_dir.join(format!("{}.dark.png", spec.name));
+        let svg_path = symbol_dir.join(format!("{}.svg", spec.name));
+
+        writeln!(src, "    pub fn {method}() -> ::polysym::SfImage {{").unwrap();
+        writeln!(src, "        ::polysym::SfImage::new(").unwrap();
+        writeln!(src, "            include_bytes!({light_path:?}),").unwrap();
+        writeln!(src, "            include_bytes!({dark_path:?}),").unwrap();
+        writeln!(src, "        )").unwrap();
+        writeln!(src, "    }}\n").unwrap();
 
         writeln!(
             src,
-            "    pub fn {method}() -> ::polysym::SfImage {{\n\
-                     ::polysym::SfImage::new(\n\
-                         include_bytes!({light_path:?}),\n\
-                         include_bytes!({dark_path:?}),\n\
-                     )\n\
-                 }}\n"
+            "    /// SVG for `{}` with `currentColor` fill — style via CSS `color`.",
+            spec.name
         )
         .unwrap();
+        writeln!(src, "    pub fn {method}_svg() -> &'static str {{").unwrap();
+        writeln!(src, "        include_str!({svg_path:?})").unwrap();
+        writeln!(src, "    }}\n").unwrap();
     }
 
+    // PNG dynamic lookup
     src.push_str(
-        "    /// Look up a symbol by its SF Symbol name (e.g. `\"trash\"`).\n\
+        "    /// Look up a symbol's PNG pair by SF Symbol name (e.g. `\"trash\"`).\n\
          /// Returns `None` if the name was not included in the build manifest.\n\
          pub fn get(name: &str) -> Option<::polysym::SfImage> {\n\
              match name {\n",
@@ -312,6 +378,20 @@ fn build_generated_source(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
     for spec in specs {
         let method = symbol_to_method_name(&spec.name);
         writeln!(src, "            {:?} => Some(Self::{}()),", spec.name, method).unwrap();
+    }
+    src.push_str("            _ => None,\n        }\n    }\n\n");
+
+    // SVG dynamic lookup
+    src.push_str(
+        "    /// Look up a symbol's SVG string by SF Symbol name (e.g. `\"trash\"`).\n\
+         /// Returns `None` if the name was not included in the build manifest.\n\
+         /// The SVG uses `currentColor` fill — set the CSS `color` property to tint it.\n\
+         pub fn get_svg(name: &str) -> Option<&'static str> {\n\
+             match name {\n",
+    );
+    for spec in specs {
+        let method = symbol_to_method_name(&spec.name);
+        writeln!(src, "            {:?} => Some(Self::{}_svg()),", spec.name, method).unwrap();
     }
     src.push_str("            _ => None,\n        }\n    }\n");
 
