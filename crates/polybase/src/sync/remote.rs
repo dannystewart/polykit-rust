@@ -39,18 +39,34 @@ use crate::sync::push::classify_push_error_message;
 
 /// Optional structured predicate filter for [`RemoteReader::fetch_records`].
 ///
-/// Each entry becomes an additional `column=eq.value` query parameter on top of the
+/// Equality and `>=` predicates are supported. Each predicate becomes an additional
+/// PostgREST query parameter (`column=eq.value` or `column=gte.value`) on top of the
 /// `user_id_column = user_id` scope (when `user_id` is provided).
+///
+/// Richer predicate shapes (`lt`, `in`, `like`, etc.) can be added when first needed
+/// without breaking the trait — keep the struct field-additive rather than swapping to
+/// an enum until a real consumer needs the abstraction.
 #[derive(Default, Debug, Clone)]
 pub struct RemoteFilter {
     /// `column = value` equality predicates (case-sensitive).
     pub eq: Vec<(String, String)>,
+    /// `column >= value` predicates. Used for delta-pull style queries that scope to
+    /// `updated_at >= anchor`. Comparison semantics are PostgREST's: numeric columns
+    /// compare numerically, text columns lexicographically.
+    pub gte: Vec<(String, String)>,
 }
 
 impl RemoteFilter {
-    /// Construct a filter from a slice of borrowed `(column, value)` pairs.
+    /// Construct an equality-only filter from a slice of borrowed `(column, value)` pairs.
+    /// Use [`Self::with_gte`] to layer range predicates on top.
     pub fn from_pairs<C: Into<String>, V: Into<String>>(pairs: Vec<(C, V)>) -> Self {
-        Self { eq: pairs.into_iter().map(|(c, v)| (c.into(), v.into())).collect() }
+        Self { eq: pairs.into_iter().map(|(c, v)| (c.into(), v.into())).collect(), gte: Vec::new() }
+    }
+
+    /// Append a `column >= value` predicate. Returns `self` to enable chaining.
+    pub fn with_gte<C: Into<String>, V: Into<String>>(mut self, column: C, value: V) -> Self {
+        self.gte.push((column.into(), value.into()));
+        self
     }
 }
 
@@ -275,6 +291,9 @@ impl RemoteReader for SupabaseRemoteReader {
             for (column, value) in &extra.eq {
                 query.push((column.clone(), format!("eq.{value}")));
             }
+            for (column, value) in &extra.gte {
+                query.push((column.clone(), format!("gte.{value}")));
+            }
         }
         let resp = self
             .client
@@ -345,6 +364,31 @@ impl RemoteReader for SupabaseRemoteReader {
         }
         Ok(versions)
     }
+}
+
+/// Compare a row's column value against a `gte.value` predicate string. Mirrors PostgREST's
+/// behavior: numeric columns compare numerically, otherwise lexicographic string comparison.
+/// A missing column never satisfies a `gte` predicate (matches PostgREST: `NULL` rows fall out).
+fn row_value_gte(row_value: Option<&Value>, predicate: &str) -> bool {
+    let Some(value) = row_value else { return false };
+    if let (Some(row_num), Ok(predicate_num)) = (value_as_i64(value), predicate.parse::<i64>()) {
+        return row_num >= predicate_num;
+    }
+    if let (Some(row_num), Ok(predicate_num)) = (value_as_f64(value), predicate.parse::<f64>()) {
+        return row_num >= predicate_num;
+    }
+    match value.as_str() {
+        Some(s) => s >= predicate,
+        None => false,
+    }
+}
+
+fn value_as_i64(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| value.as_str().and_then(|s| s.parse::<i64>().ok()))
+}
+
+fn value_as_f64(value: &Value) -> Option<f64> {
+    value.as_f64().or_else(|| value.as_str().and_then(|s| s.parse::<f64>().ok()))
 }
 
 // -- Memory test impls -------------------------------------------------------------------------
@@ -451,6 +495,11 @@ impl RemoteReader for MemoryReader {
             if let Some(extra) = filter {
                 for (column, value) in &extra.eq {
                     if row.get(column).and_then(Value::as_str) != Some(value.as_str()) {
+                        return false;
+                    }
+                }
+                for (column, value) in &extra.gte {
+                    if !row_value_gte(row.get(column), value) {
                         return false;
                     }
                 }
@@ -572,6 +621,67 @@ mod tests {
             .unwrap();
         assert_eq!(alice_in_x.len(), 1);
         assert_eq!(alice_in_x[0].get("id").and_then(Value::as_str), Some("1"));
+    }
+
+    #[tokio::test]
+    async fn memory_reader_filters_by_gte_on_numeric_column() {
+        let reader = MemoryReader::new();
+        reader.seed(
+            "messages",
+            vec![
+                obj(&[
+                    ("id", json!("old")),
+                    ("user_id", json!("alice")),
+                    ("updated_at", json!(100i64)),
+                    ("version", json!(1)),
+                    ("deleted", json!(false)),
+                ]),
+                obj(&[
+                    ("id", json!("boundary")),
+                    ("user_id", json!("alice")),
+                    ("updated_at", json!(500i64)),
+                    ("version", json!(2)),
+                    ("deleted", json!(false)),
+                ]),
+                obj(&[
+                    ("id", json!("recent")),
+                    ("user_id", json!("alice")),
+                    ("updated_at", json!(900i64)),
+                    ("version", json!(3)),
+                    ("deleted", json!(false)),
+                ]),
+            ],
+        );
+
+        // Delta-pull style query: updated_at >= 500 should return boundary + recent.
+        let filter = RemoteFilter::default().with_gte("updated_at", "500");
+        let delta = reader
+            .fetch_records("messages", "user_id", Some("alice"), Some(&filter), "tok")
+            .await
+            .unwrap();
+        let mut ids: Vec<&str> =
+            delta.iter().filter_map(|r| r.get("id").and_then(Value::as_str)).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["boundary", "recent"]);
+
+        // Eq + gte compose: alice messages with updated_at >= 900 should return only recent.
+        let combined =
+            RemoteFilter::from_pairs(vec![("user_id", "alice")]).with_gte("updated_at", "900");
+        let recent = reader
+            .fetch_records("messages", "user_id", None, Some(&combined), "tok")
+            .await
+            .unwrap();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].get("id").and_then(Value::as_str), Some("recent"));
+
+        // Anchor past the latest record: zero-merge pull. Caller uses this signal to leave
+        // the anchor unchanged (the "never advance on zero merges" rule).
+        let filter_future = RemoteFilter::default().with_gte("updated_at", "10000");
+        let empty = reader
+            .fetch_records("messages", "user_id", Some("alice"), Some(&filter_future), "tok")
+            .await
+            .unwrap();
+        assert!(empty.is_empty());
     }
 
     #[tokio::test]
