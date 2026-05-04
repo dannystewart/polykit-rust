@@ -354,31 +354,25 @@ fn try_copy_from_assets(spec: &SymbolSpec, symbol_dir: &Path, assets_dir: &Path)
     true
 }
 
-/// Compare freshly generated tier-1 assets against the committed cache and
-/// warn if they would differ. Only meaningful on macOS dev machines where
-/// `sfsym` actually ran; silently no-ops elsewhere.
-fn check_stale_asset(spec: &SymbolSpec, symbol_dir: &Path, assets_dir: &Path) {
-    let mut stale = Vec::new();
-    for ext in ["light.png", "dark.png", "svg"] {
-        let fresh = symbol_dir.join(format!("{}.{}", spec.name, ext));
-        let cached = assets_dir.join(format!("{}.{}", spec.name, ext));
-        let differs = match (std::fs::read(&fresh), std::fs::read(&cached)) {
-            (Ok(f), Ok(c)) => f != c,
-            (Ok(_), Err(_)) => true,
-            // If we can't read the fresh output something else has gone wrong;
-            // skip the stale check rather than emit confusing warnings.
-            _ => false,
-        };
-        if differs {
-            stale.push(ext);
-        }
-    }
-    if !stale.is_empty() {
+/// Warn when a symbol that tier-1 produced fresh assets for has no committed
+/// cache files. This nudges devs to run the refresh script after adding new
+/// symbols so cross-platform builds will find them via tier 2.
+///
+/// We only check *existence*, not byte equality. sfsym output isn't guaranteed
+/// to be byte-stable across runs (it can vary subtly with system state), and
+/// false-positive warnings would be louder than the actual signal.
+fn check_stale_asset(spec: &SymbolSpec, _symbol_dir: &Path, assets_dir: &Path) {
+    let missing: Vec<&str> = ["light.png", "dark.png", "svg"]
+        .into_iter()
+        .filter(|ext| !assets_dir.join(format!("{}.{}", spec.name, ext)).exists())
+        .collect();
+
+    if !missing.is_empty() {
         println!(
-            "cargo::warning=polysym: '{}' has stale or missing committed assets [{}] - \
+            "cargo::warning=polysym: '{}' is missing committed cache files [{}] - \
              run scripts/polysym-refresh.sh before commit",
             spec.name,
-            stale.join(", "),
+            missing.join(", "),
         );
     }
 }
