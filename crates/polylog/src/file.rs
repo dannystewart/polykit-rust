@@ -1,10 +1,11 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
 
-use crate::builder::LogConfig;
+use crate::builder::{LogConfig, TargetOverride, effective_min_level};
 use crate::{InitError, Level};
 
 struct MessageVisitor(String);
@@ -26,6 +27,7 @@ impl Visit for MessageVisitor {
 pub(crate) struct FileLayer {
     pub(crate) tz: jiff::tz::TimeZone,
     pub(crate) writer: tracing_appender::non_blocking::NonBlocking,
+    pub(crate) target_overrides: Arc<[TargetOverride]>,
 }
 
 fn format_file(
@@ -73,7 +75,7 @@ pub(crate) fn build_file_layer(
     let file_appender = tracing_appender::rolling::daily(&directory, &filename);
     let (writer, guard) = tracing_appender::non_blocking(file_appender);
 
-    Ok((FileLayer { tz, writer }, guard))
+    Ok((FileLayer { tz, writer, target_overrides: config.target_overrides.clone() }, guard))
 }
 
 impl FileLayer {
@@ -87,7 +89,12 @@ impl FileLayer {
         let Some(event_level) = Level::from_tracing(*meta.level()) else {
             return Vec::new();
         };
-        if event_level < crate::init::current_min_level() {
+        let min_level = effective_min_level(
+            meta.target(),
+            &self.target_overrides,
+            crate::init::current_min_level(),
+        );
+        if event_level < min_level {
             return Vec::new();
         }
 
@@ -145,7 +152,11 @@ mod tests {
         assert!(std::fs::create_dir_all(&dir).is_ok());
         let appender = tracing_appender::rolling::daily(&dir, "test.log");
         let (writer, _guard) = tracing_appender::non_blocking(appender);
-        FileLayer { tz: jiff::tz::TimeZone::UTC, writer }
+        FileLayer {
+            tz: jiff::tz::TimeZone::UTC,
+            writer,
+            target_overrides: Arc::from(Vec::<TargetOverride>::new()),
+        }
     }
 
     fn render_direct(
@@ -225,6 +236,7 @@ mod tests {
             format: FormatMode::Normal,
             color: ColorMode::Never,
             log_file: Some(log_path.clone()),
+            target_overrides: Arc::from(Vec::<TargetOverride>::new()),
         };
         let result = build_file_layer(&config, jiff::tz::TimeZone::UTC);
         assert!(result.is_ok(), "expected Ok but got Err");
@@ -242,6 +254,7 @@ mod tests {
             format: FormatMode::Normal,
             color: ColorMode::Never,
             log_file: Some(PathBuf::from("/dev/null/sub")),
+            target_overrides: Arc::from(Vec::<TargetOverride>::new()),
         };
         let result = build_file_layer(&config, jiff::tz::TimeZone::UTC);
         assert!(

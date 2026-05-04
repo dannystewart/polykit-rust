@@ -1,10 +1,11 @@
 use std::fmt::Write as _;
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use owo_colors::OwoColorize;
 use tracing_subscriber::Layer;
 
-use crate::builder::LogConfig;
+use crate::builder::{LogConfig, TargetOverride, effective_min_level};
 use crate::format::{ColorMode, FormatMode};
 use crate::level::{Level, level_color};
 
@@ -12,11 +13,17 @@ pub(crate) struct ConsoleLayer {
     format: FormatMode,
     color_mode: ColorMode,
     tz: jiff::tz::TimeZone,
+    target_overrides: Arc<[TargetOverride]>,
 }
 
 impl ConsoleLayer {
     pub(crate) fn new_with_tz(config: &LogConfig, tz: jiff::tz::TimeZone) -> Self {
-        Self { format: config.format, color_mode: config.color, tz }
+        Self {
+            format: config.format,
+            color_mode: config.color,
+            tz,
+            target_overrides: config.target_overrides.clone(),
+        }
     }
 
     pub(crate) fn render_event(&self, event: &tracing::Event<'_>) -> Vec<u8> {
@@ -28,7 +35,12 @@ impl ConsoleLayer {
         let Some(level) = Level::from_tracing(*tracing_level) else {
             return Vec::new();
         };
-        if level < crate::init::current_min_level() {
+        // Per-target override (if any) replaces the global min for matched targets;
+        // otherwise the global min applies.
+        let target = event.metadata().target();
+        let min_level =
+            effective_min_level(target, &self.target_overrides, crate::init::current_min_level());
+        if level < min_level {
             return Vec::new();
         }
 
@@ -298,6 +310,7 @@ mod tests {
             format: FormatMode::Normal,
             color_mode: ColorMode::Never,
             tz: jiff::tz::TimeZone::UTC,
+            target_overrides: Arc::from(Vec::<TargetOverride>::new()),
         };
 
         let sub = Arc::new(CapturingSubscriber { layer, output: Mutex::new(Vec::new()) });
