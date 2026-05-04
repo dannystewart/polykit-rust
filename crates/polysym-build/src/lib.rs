@@ -79,8 +79,10 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
     // Emit rerun directives so cargo reruns this script when the build.rs changes.
     println!("cargo::rerun-if-changed=build.rs");
 
-    let light_batch = build_batch_input(specs, &symbol_dir, "light", "#000000");
-    let dark_batch = build_batch_input(specs, &symbol_dir, "dark", "#ffffff");
+    // Light: monochrome black. Dark: hierarchical white — monochrome mode ignores --color
+    // in sfsym and always outputs black, but hierarchical mode respects it correctly.
+    let light_batch = build_batch_input(specs, &symbol_dir, "light", "monochrome", "#000000");
+    let dark_batch = build_batch_input(specs, &symbol_dir, "dark", "hierarchical", "#ffffff");
 
     run_batch(&sfsym, &light_batch, "light");
     run_batch(&sfsym, &dark_batch, "dark");
@@ -121,10 +123,16 @@ fn find_sfsym() -> PathBuf {
 }
 
 /// Build the stdin batch input for `sfsym batch` for one appearance variant.
+///
+/// Use `mode = "monochrome"` for the light (black) variant and
+/// `mode = "hierarchical"` for the dark (white) variant. Monochrome mode in
+/// sfsym ignores `--color` and always outputs black; hierarchical mode
+/// correctly applies the color to the primary layer.
 fn build_batch_input(
     specs: &[SymbolSpec],
     symbol_dir: &Path,
     variant: &str,
+    mode: &str,
     color: &str,
 ) -> String {
     let mut batch = String::new();
@@ -132,8 +140,9 @@ fn build_batch_input(
         let out_path = symbol_dir.join(format!("{}.{}.png", spec.name, variant));
         writeln!(
             batch,
-            "{} -f png --size {} --weight {} --color '{}' -o {}",
+            "{} -f png --mode {} --size {} --weight {} --color '{}' -o {}",
             spec.name,
+            mode,
             spec.size,
             spec.weight,
             color,
