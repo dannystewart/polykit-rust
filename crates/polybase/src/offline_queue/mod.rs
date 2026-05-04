@@ -129,8 +129,31 @@ impl OfflineQueue for MemoryQueue {
             finalize_queue_after_processing(&current, &snapshot_contract, &failed_contract);
         let retained_keys: std::collections::HashSet<(String, String, i64)> =
             retained.into_iter().map(|op| (op.table, op.entity_id, op.queued_at_micros)).collect();
-        guard.retain(|op| {
-            retained_keys.contains(&(op.table.clone(), op.entity_id.clone(), op.queued_at_micros))
+
+        // Key by the full (table, entity_id, queued_at_micros) tuple so a concurrent enqueue that
+        // happened to share `(table, entity_id)` with a failed op (but a newer queued_at_micros)
+        // is *not* treated as a retry — it's a fresh enqueue and should keep retry_count = 0.
+        let failed_by_full_key: std::collections::HashMap<(String, String, i64), Option<String>> =
+            failed
+                .iter()
+                .map(|f| {
+                    (
+                        (f.table.clone(), f.entity_id.clone(), f.queued_at_micros),
+                        f.last_error.clone(),
+                    )
+                })
+                .collect();
+
+        guard.retain_mut(|op| {
+            let full_key = (op.table.clone(), op.entity_id.clone(), op.queued_at_micros);
+            if !retained_keys.contains(&full_key) {
+                return false;
+            }
+            if let Some(last_error) = failed_by_full_key.get(&full_key) {
+                op.retry_count = op.retry_count.saturating_add(1);
+                op.last_error = last_error.clone();
+            }
+            true
         });
         Ok(())
     }
@@ -177,5 +200,75 @@ mod tests {
         let after = q.snapshot().await.unwrap();
         assert_eq!(after.len(), 1);
         assert_eq!(after[0].entity_id, "2");
+    }
+
+    #[tokio::test]
+    async fn finalize_retains_failures_and_bumps_retry_count() {
+        let q = MemoryQueue::new();
+        q.enqueue(op("conversations", "c-1", 100)).await.unwrap();
+        let snap = q.snapshot().await.unwrap();
+
+        let mut failed = snap[0].clone();
+        failed.last_error = Some("HTTP 503".into());
+
+        q.finalize_after_processing(&snap, &[failed]).await.unwrap();
+
+        let after = q.snapshot().await.unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(
+            after[0].retry_count, 1,
+            "retry_count should be incremented on retained failures"
+        );
+        assert_eq!(after[0].last_error.as_deref(), Some("HTTP 503"));
+
+        // Retrying again bumps it further so callers can implement exponential backoff against it.
+        let snap2 = q.snapshot().await.unwrap();
+        let mut failed2 = snap2[0].clone();
+        failed2.last_error = Some("HTTP 504".into());
+        q.finalize_after_processing(&snap2, &[failed2]).await.unwrap();
+
+        let after2 = q.snapshot().await.unwrap();
+        assert_eq!(after2[0].retry_count, 2);
+        assert_eq!(after2[0].last_error.as_deref(), Some("HTTP 504"));
+    }
+
+    #[tokio::test]
+    async fn finalize_drops_failure_when_superseded_by_newer_enqueue() {
+        let q = MemoryQueue::new();
+        q.enqueue(op("attachments", "a-1", 100)).await.unwrap();
+        let snap = q.snapshot().await.unwrap();
+
+        // A newer op for the same key arrives during processing.
+        q.enqueue(op("attachments", "a-1", 200)).await.unwrap();
+
+        let mut failed = snap[0].clone();
+        failed.last_error = Some("transient".into());
+        q.finalize_after_processing(&snap, &[failed]).await.unwrap();
+
+        let after = q.snapshot().await.unwrap();
+        assert_eq!(after.len(), 1, "newer enqueue should remain");
+        assert_eq!(after[0].queued_at_micros, 200);
+        assert_eq!(
+            after[0].retry_count, 0,
+            "newer enqueue is a fresh op, not a retry of the failed snapshot entry"
+        );
+        assert!(after[0].last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn enqueue_replacement_resets_retry_count_and_clears_error() {
+        let q = MemoryQueue::new();
+
+        let mut original = op("personas", "p-1", 100);
+        original.retry_count = 3;
+        original.last_error = Some("network timeout".into());
+        q.enqueue(original).await.unwrap();
+
+        q.enqueue(op("personas", "p-1", 200)).await.unwrap();
+
+        let snap = q.snapshot().await.unwrap();
+        assert_eq!(snap.len(), 1);
+        assert_eq!(snap[0].retry_count, 0, "fresh enqueue should reset retry counter");
+        assert!(snap[0].last_error.is_none(), "fresh enqueue should clear last_error");
     }
 }
