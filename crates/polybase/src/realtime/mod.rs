@@ -67,7 +67,10 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
 use crate::auth::SessionStore;
-use crate::events::RealtimeOp;
+// Re-exported as part of the realtime surface so downstream callers can grab everything they need
+// from a single import path (`use polybase::realtime::{RealtimeChange, RealtimeOp, ...}`) without
+// reaching into the events module for the op kind embedded in [`RealtimeChange::op`].
+pub use crate::events::RealtimeOp;
 
 // MARK: - Public types
 
