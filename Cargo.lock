@@ -2858,6 +2858,7 @@ name = "polysym-build"
 version = "0.2.0"
 dependencies = [
  "image",
+ "png 0.17.16",
 ]
 
 [[package]]

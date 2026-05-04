@@ -2,7 +2,7 @@
 //!
 //! Add this to your app's `build.rs`:
 //!
-//! ```rust,no_run
+//! ```rust,ignore
 //! fn main() {
 //!     polysym_build::generate(&[
 //!         "trash",
@@ -126,14 +126,22 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
 }
 
 /// Composite the symbol PNG (rendered at inner_size) into a larger transparent
-/// canvas (canvas_px), centering it. The file is overwritten in place.
+/// canvas (canvas_px), centering it, and write the result with the @2x Retina
+/// `pHYs` DPI metadata chunk preserved.
+///
+/// Without the `pHYs` chunk, `NSImage` treats the canvas as 1x (e.g. 40×40px
+/// becomes 40×40pt), and the menu system scales it down to the icon slot,
+/// producing blurry output. With `pHYs` set to 144 DPI (5669 pixels/meter),
+/// `NSImage` correctly interprets the canvas as @2x (40px = 20pt) and no
+/// scaling occurs.
 fn apply_padding(path: &Path, spec: &SymbolSpec) {
     use image::RgbaImage;
+    use std::io::BufWriter;
 
     let canvas_px = spec.canvas_px();
     let inner_px = spec.inner_size() * 2; // sfsym exports at 2x
 
-    // No padding needed (or rounding produced identical sizes) — skip.
+    // No compositing needed — sfsym's output already has correct @2x pHYs.
     if canvas_px <= inner_px {
         return;
     }
@@ -145,12 +153,34 @@ fn apply_padding(path: &Path, spec: &SymbolSpec) {
     let mut canvas = RgbaImage::new(canvas_px, canvas_px);
     let x_off = (canvas_px - src.width()) / 2;
     let y_off = (canvas_px - src.height()) / 2;
-
     image::imageops::overlay(&mut canvas, &src, i64::from(x_off), i64::from(y_off));
 
-    canvas
-        .save(path)
-        .unwrap_or_else(|e| panic!("failed to save padded PNG {}: {e}", path.display()));
+    // Write with the raw png encoder so we can inject the pHYs chunk.
+    // image::save() would produce a plain 72 DPI PNG, stripping the @2x metadata.
+    let file = std::fs::File::create(path)
+        .unwrap_or_else(|e| panic!("failed to open {} for writing: {e}", path.display()));
+
+    let mut enc = png::Encoder::new(BufWriter::new(file), canvas_px, canvas_px);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+
+    let mut writer =
+        enc.write_header().unwrap_or_else(|e| panic!("PNG header for {}: {e}", path.display()));
+
+    // pHYs chunk: 5669 pixels/meter ≈ 144 DPI = @2x Retina.
+    // This makes NSImage interpret canvas_px pixels as canvas_px/2 logical points.
+    const PPM_2X: u32 = 5669;
+    let mut phys = [0u8; 9];
+    phys[0..4].copy_from_slice(&PPM_2X.to_be_bytes());
+    phys[4..8].copy_from_slice(&PPM_2X.to_be_bytes());
+    phys[8] = 1; // unit: meter
+    writer
+        .write_chunk(png::chunk::ChunkType(*b"pHYs"), &phys)
+        .unwrap_or_else(|e| panic!("pHYs chunk for {}: {e}", path.display()));
+
+    writer
+        .write_image_data(canvas.as_raw())
+        .unwrap_or_else(|e| panic!("PNG data for {}: {e}", path.display()));
 }
 
 /// Locate the `sfsym` binary, searching common install locations.
