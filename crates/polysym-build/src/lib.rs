@@ -303,19 +303,30 @@ fn query_symbol_info(sfsym: &Path, name: &str) -> Option<SymbolInfo> {
     }
 
     // Minimal JSON parse — avoid pulling in serde just for build-time use.
-    // The output is compact and predictable; we extract four numeric fields.
+    // Extract from each section independently to avoid occurrence-counting
+    // ambiguity: the JSON always emits "alignmentRect" before "size", and
+    // both sections contain "width" and "height" keys.
     let json = std::str::from_utf8(&output.stdout).ok()?;
 
-    let natural_width = extract_json_f64(json, "width", 0)?;
-    let natural_height = extract_json_f64(json, "height", 0)?;
-    // alignmentRect fields — find the second occurrence of each key since
-    // "width" and "height" also appear in the top-level "size" object.
-    let align_w = extract_json_f64(json, "width", 1)?;
-    let align_h = extract_json_f64(json, "height", 1)?;
-    let align_x = extract_json_f64(json, "x", 0)?;
-    let align_y = extract_json_f64(json, "y", 0)?;
+    let ar_section = section_after(json, "\"alignmentRect\"")?;
+    let size_section = section_after(json, "\"size\"")?;
+
+    let align_w = extract_json_f64(ar_section, "width", 0)?;
+    let align_h = extract_json_f64(ar_section, "height", 0)?;
+    let align_x = extract_json_f64(ar_section, "x", 0)?;
+    let align_y = extract_json_f64(ar_section, "y", 0)?;
+    let natural_width = extract_json_f64(size_section, "width", 0)?;
+    let natural_height = extract_json_f64(size_section, "height", 0)?;
 
     Some(SymbolInfo { natural_width, natural_height, align_x, align_y, align_w, align_h })
+}
+
+/// Return the substring of `json` that starts immediately after the first
+/// occurrence of `key`. Used to scope field extraction to a specific JSON
+/// section, avoiding false matches in other sections.
+fn section_after<'a>(json: &'a str, key: &str) -> Option<&'a str> {
+    let pos = json.find(key)?;
+    Some(&json[pos + key.len()..])
 }
 
 /// Extract the Nth (0-based) occurrence of `"key" : <number>` from a JSON string.
