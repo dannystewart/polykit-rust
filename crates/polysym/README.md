@@ -1,23 +1,23 @@
 # polysym
 
-SF Symbol icons for Tauri apps on macOS — native menus and WebView UI elements.
+SF Symbol icons for Tauri apps — native menus and WebView UI elements, with cross-platform fallback so the same code runs on Windows and Linux.
 
-`polysym` is two crates: **`polysym-build`** generates symbol assets at build time using [`sfsym`](https://github.com/yapstudios/sfsym), and **`polysym`** gives you a typed `SfIcons` struct at runtime to use them anywhere in your app.
+`polysym` is two crates: **`polysym-build`** resolves and embeds symbol assets at build time, and **`polysym`** gives you a typed `SfIcons` struct at runtime to use them anywhere in your app.
 
 Two formats are generated for every symbol in your manifest:
 
 - **PNG** (light + dark variants) for native menu icons via `IconMenuItem`
 - **SVG** (single `currentColor` variant) for WebView UI elements — color is controlled by CSS, so dark mode, tinting, and hover states all work automatically
 
-## Prerequisites
+## Three-tier resolution
 
-`sfsym` must be installed on any machine that builds your app:
+For each symbol, `polysym-build` tries three strategies in order:
 
-```sh
-brew install yapstudios/tap/sfsym
-```
+1. **Tier 1: `sfsym`.** On macOS dev machines with [`sfsym`](https://github.com/yapstudios/sfsym) installed (`brew install yapstudios/tap/sfsym`), live SF Symbol assets are produced from the system. This is the happy path and yields the highest-fidelity icons.
+2. **Tier 2: committed cache.** When `sfsym` is unavailable (e.g. CI on Windows or Linux), `polysym-build` reads pre-generated assets from `<CARGO_MANIFEST_DIR>/polysym-assets/`. These are the exact tier-1 outputs, mirrored there by running `POLYSYM_REFRESH=1 cargo check` on a Mac and committed to the repo.
+3. **Tier 3: Lucide.** When neither tier 1 nor tier 2 has a given symbol (e.g. you added an icon and forgot to refresh the cache before pushing), `polysym-build` falls back to a [Lucide](https://lucide.dev) icon you nominate per-symbol via `SymbolSpec::lucide("name")`. The Lucide SVG is rasterized into matching light/dark PNGs at build time, so menus and WebView icons both keep working with no consumer-side awareness.
 
-`polysym-build` will detect it in `PATH` and common Homebrew and manual install locations, and fail the build with a clear error if it's missing.
+Symbols that have no successful tier are quietly omitted from the generated `SfIcons` API. `SfIcons::get(name)` and `SfIcons::get_svg(name)` return `None` for them, so callers can fall back at the call site.
 
 ## Setup
 
@@ -34,26 +34,51 @@ tauri = { version = "...", features = ["image-png"] }  # image-png is required
 
 ### 2. build.rs
 
-Call `polysym_build::generate` before `tauri_build::build`. List every SF Symbol name you want to use — these are the same names you'd use in SwiftUI's `Image(systemName:)`.
-
-Symbols are exported at 20pt by default (40×40 px at 2x), which displays at 20 logical points in macOS 26 menus. Override per-symbol with `generate_with_opts` if needed.
+List every SF Symbol name you want to use along with its Lucide fallback. SF Symbol names match what you'd use in SwiftUI's `Image(systemName:)`; Lucide names use kebab-case and must exist in the [Lucide library](https://lucide.dev/icons/) (run `lucide-svg-rs list` to enumerate available names).
 
 ```rust
+use polysym_build::SymbolSpec;
+
 fn main() {
-    polysym_build::generate(&[
-        "trash",
-        "folder.badge.plus",
-        "bell.slash",
-        "square.and.pencil",
-        "pin",
-        "sparkles",
-        "archivebox",
+    polysym_build::generate_with_opts(&[
+        SymbolSpec::new("trash").lucide("trash-2"),
+        SymbolSpec::new("folder.badge.plus").lucide("folder-plus"),
+        SymbolSpec::new("bell.slash").lucide("bell-off"),
+        SymbolSpec::new("square.and.pencil").lucide("square-pen"),
+        SymbolSpec::new("pin").lucide("pin"),
+        SymbolSpec::new("sparkles").lucide("sparkles"),
+        SymbolSpec::new("archivebox").lucide("archive"),
     ]);
     tauri_build::build();
 }
 ```
 
-This runs `sfsym` and embeds the resulting PNGs and SVGs in your binary. Regeneration happens automatically whenever `build.rs` changes.
+Symbols are exported at 20pt by default (40×40 px at 2x), which displays at 20 logical points in macOS 26 menus. Override per-symbol options with the builder methods on `SymbolSpec` (`.size(...)`, `.weight(...)`, `.padding(...)`, `.lucide(...)`).
+
+If you don't need a Lucide fallback for a given symbol, omit `.lucide(...)`. If the simpler form is enough — bare names with no Lucide support — use `polysym_build::generate(&["trash", "pin", ...])`.
+
+This embeds the resulting PNGs and SVGs in your binary. Regeneration happens automatically whenever `build.rs` changes.
+
+### Refreshing the committed cache
+
+After adding or changing a symbol in `build.rs`, run:
+
+```sh
+POLYSYM_REFRESH=1 cargo check
+```
+
+…anywhere in your project on a macOS machine with `sfsym` installed. This mirrors the live tier-1 outputs into `<CARGO_MANIFEST_DIR>/polysym-assets/`, which you then commit. Cross-platform CI uses those committed assets via tier 2; if a symbol's cache is missing or stale on Mac, you'll see a `cargo::warning` reminding you to refresh.
+
+A typical wrapper script in your app's repo looks like:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+POLYSYM_REFRESH=1 cargo check --manifest-path src-tauri/Cargo.toml
+```
+
+Wire that into your pre-commit hook to keep the cache in sync automatically.
 
 ### 3. src/icons.rs
 
@@ -199,16 +224,17 @@ let svg = icons::SfIcons::trash_svg();
 
 ## Custom size and weight
 
-For symbols that need different options, use `generate_with_opts` and `SymbolSpec`:
+`SymbolSpec` is a builder; chain methods for finer control:
 
 ```rust
 use polysym_build::SymbolSpec;
 
 fn main() {
     polysym_build::generate_with_opts(&[
-        SymbolSpec::new("trash"),                        // defaults: 20pt, regular
-        SymbolSpec::new("sidebar.left").size(16),        // 16pt → 32×32 px at 2x
-        SymbolSpec::new("bold").weight("semibold"),      // semibold weight
+        SymbolSpec::new("trash").lucide("trash-2"),                              // defaults: 20pt, regular
+        SymbolSpec::new("sidebar.left").size(16).lucide("panel-left"),          // 16pt → 32×32 px at 2x
+        SymbolSpec::new("bold").weight("semibold").lucide("bold"),              // semibold weight
+        SymbolSpec::new("rare.sf.symbol"),                                       // no Lucide fallback
     ]);
     tauri_build::build();
 }
@@ -220,16 +246,18 @@ PNG output is always at 2x density: `--size N` produces an `N×2` × `N×2` pixe
 
 ## How it works
 
-1. `polysym_build::generate` calls `sfsym batch` three times — black PNGs (light mode), white PNGs (dark mode), and monochrome SVGs — piping all export commands through stdin for maximum throughput (~800 symbols/sec).
-2. PNGs are post-processed: composited onto a padded transparent canvas with `@2x` Retina DPI metadata (`pHYs` chunk, 5669 px/m = 144 DPI) so `NSImage` renders them sharp without scaling. SVGs are post-processed to replace the hardcoded color with `currentColor`.
-3. All assets land in Cargo's `$OUT_DIR`, never in your source tree.
-4. A `polysym_generated.rs` file is written to `$OUT_DIR` containing a `SfIcons` struct with typed methods per symbol (`include_bytes!` for PNGs, `include_str!` for SVGs) and `get`/`get_svg` dynamic lookups.
-5. `polysym::include_symbols!()` expands to `include!(concat!(env!("OUT_DIR"), "/polysym_generated.rs"))`, pulling `SfIcons` into the calling module.
-6. At runtime, `SfImage::bytes()` calls `polysym::is_dark_mode()` (a one-shot `defaults read -g AppleInterfaceStyle`) and returns the appropriate byte slice.
+1. **Validation.** Every `.lucide("name")` is checked against the bundled Lucide archive (via [`lucide-svg-rs`](https://crates.io/crates/lucide-svg-rs)). A typo fails the build with a clear `cargo::error`.
+2. **Tier 1.** `polysym_build` calls `sfsym batch` three times — black PNGs (light mode), white PNGs (dark mode), and monochrome SVGs — piping all export commands through stdin for maximum throughput (~800 symbols/sec). PNGs are post-processed: composited onto a padded transparent canvas with `@2x` Retina DPI metadata (`pHYs` chunk, 5669 px/m = 144 DPI) so `NSImage` renders them sharp without scaling. SVGs are post-processed to replace the hardcoded color with `currentColor` and rewrite the viewBox to a tight crop around the glyph's alignment rect.
+3. **Tier 2.** When `sfsym` is unavailable, `polysym_build` looks for `<name>.light.png`, `<name>.dark.png`, and `<name>.svg` under `<CARGO_MANIFEST_DIR>/polysym-assets/`. If all three are present, they're copied byte-for-byte into `$OUT_DIR`.
+4. **Tier 3.** When no cached asset exists, `polysym_build` reads the configured Lucide SVG, normalizes it for inline use, and rasterizes it twice through [`resvg`](https://crates.io/crates/resvg) — once with `currentColor` resolved to `#000000` (light) and once to `#ffffff` (dark) — applying the same padding + `pHYs` pipeline as tier 1 so the resulting PNGs work transparently in `IconMenuItem`.
+5. All resolved assets land in Cargo's `$OUT_DIR`. The committed cache directory `polysym-assets/` is the only thing that lives in your source tree.
+6. A `polysym_generated.rs` file is written to `$OUT_DIR` containing a `SfIcons` struct with typed methods per symbol (`include_bytes!` for PNGs, `include_str!` for SVGs) and `get` / `get_svg` dynamic lookups. Symbols whose all three tiers fail are simply absent from this file — typed methods don't exist for them and dynamic lookups return `None`.
+7. `polysym::include_symbols!()` expands to `include!(concat!(env!("OUT_DIR"), "/polysym_generated.rs"))`, pulling `SfIcons` into the calling module.
+8. At runtime, `SfImage::bytes()` calls `polysym::is_dark_mode()` (a one-shot `defaults read -g AppleInterfaceStyle` on macOS, `false` elsewhere) and returns the appropriate byte slice.
 
 ## Notes
 
-- The generated assets live entirely in `$OUT_DIR` — nothing to add to `.gitignore`.
+- The generated assets live in `$OUT_DIR` (per build) plus `polysym-assets/` (committed cache). Nothing else needs to change in your `.gitignore`.
 - Icons are appearance-aware at menu-build time, not per-render. If a user switches appearance while your app is running, menus created before the switch will keep their original icon variant until recreated.
 - `sfsym` uses a private AppKit API to read SF Symbol geometry. It has been stable from macOS 13 through macOS 26, but it is a build-time tool — this risk is the same as any other build dependency.
-- SF Symbols are Apple's property. Their license permits use only in apps targeting Apple platforms. Don't use `polysym` to ship symbols in a non-Apple-platform app.
+- SF Symbols are Apple's property. Their license permits use only in apps targeting Apple platforms. The Lucide tier-3 fallback exists so that **the same Tauri app** can be built on Windows / Linux without shipping SF Symbol assets there — those builds receive Lucide-rendered PNGs/SVGs instead. Do not commit SF Symbol PNGs / SVGs into a non-Apple-only repo if your distribution requires you to avoid shipping Apple-licensed assets to other platforms; in that case, omit the `polysym-assets/` directory and let tier 3 handle every symbol on non-Apple builds.

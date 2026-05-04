@@ -1,23 +1,49 @@
-//! Build-time helper for generating SF Symbol icon assets.
+//! Build-time helper for generating SF Symbol icon assets with cross-platform fallbacks.
 //!
 //! Add this to your app's `build.rs`:
 //!
 //! ```rust,ignore
+//! use polysym_build::SymbolSpec;
+//!
 //! fn main() {
-//!     polysym_build::generate(&[
-//!         "trash",
-//!         "folder.badge.plus",
-//!         "bell.slash",
+//!     polysym_build::generate_with_opts(&[
+//!         SymbolSpec::new("trash").lucide("trash-2"),
+//!         SymbolSpec::new("folder.badge.plus").lucide("folder-plus"),
+//!         SymbolSpec::new("bell.slash").lucide("bell-off"),
 //!     ]);
 //!     tauri_build::build();
 //! }
 //! ```
 //!
-//! This requires `sfsym` to be installed: `brew install yapstudios/tap/sfsym`
+//! # Three-tier resolution
+//!
+//! For each symbol, `polysym-build` attempts to produce a light PNG, dark PNG,
+//! and SVG via three tiers in order:
+//!
+//! 1. **Tier 1 (sfsym):** if the `sfsym` binary is installed (`brew install yapstudios/tap/sfsym`),
+//!    invoke it for live SF Symbol generation. On macOS dev machines this is
+//!    the happy path. When `POLYSYM_REFRESH=1` is set, generated assets are
+//!    also mirrored into `<CARGO_MANIFEST_DIR>/polysym-assets/` so they can be
+//!    committed to source control.
+//! 2. **Tier 2 (committed cache):** if `sfsym` is unavailable or fails, look in
+//!    `<CARGO_MANIFEST_DIR>/polysym-assets/` for previously generated PNG/SVG
+//!    files. This makes builds work on Windows or Linux as long as the assets
+//!    were committed by a macOS developer with `sfsym` installed.
+//! 3. **Tier 3 (Lucide):** if the symbol has a `.lucide("name")` fallback set,
+//!    fetch the corresponding SVG from the `lucide-svg-rs` embedded archive,
+//!    rasterize light/dark PNG variants via `resvg`, and use those. This lets
+//!    apps degrade gracefully when an SF asset has not yet been refreshed.
+//!
+//! Symbols without any successful tier are simply omitted from the generated
+//! `SfIcons` API; `SfIcons::get(name)` and `SfIcons::get_svg(name)` return
+//! `None` for them, so callers can fall back at the call site.
 
+use std::collections::HashSet;
 use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use lucide_svg_rs::{ICONS_TAR, LucideClient};
 
 /// Geometry returned by `sfsym info <name> --json`.
 ///
@@ -51,12 +77,19 @@ pub struct SymbolSpec {
     /// padding is applied by compositing the symbol into a larger transparent
     /// canvas after export.
     pub padding: f32,
+    /// Optional Lucide icon name used as a tier-3 fallback when neither
+    /// `sfsym` nor a committed cache asset is available for this symbol.
+    ///
+    /// Lucide names must match an entry in the `lucide-svg-rs` archive (run
+    /// `lucide-svg-rs list` to see all available names). They are validated at
+    /// build time; an invalid name produces a `cargo::error`.
+    pub lucide: Option<String>,
 }
 
 impl SymbolSpec {
     /// Create a spec with default settings (20pt, regular weight, 12% padding).
     pub fn new(name: impl Into<String>) -> Self {
-        Self { name: name.into(), size: 20, weight: "regular".into(), padding: 0.12 }
+        Self { name: name.into(), size: 20, weight: "regular".into(), padding: 0.12, lucide: None }
     }
 
     /// Override the point size of the final canvas. The symbol is rendered at
@@ -80,6 +113,15 @@ impl SymbolSpec {
         self
     }
 
+    /// Set the Lucide icon name to use as a tier-3 fallback when neither
+    /// `sfsym` nor a committed cache asset is available for this symbol.
+    ///
+    /// Lucide names use kebab-case (e.g. `"trash-2"`, `"folder-plus"`).
+    pub fn lucide(mut self, name: impl Into<String>) -> Self {
+        self.lucide = Some(name.into());
+        self
+    }
+
     /// The point size passed to sfsym — smaller than `size` to leave room for padding.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
     fn inner_size(&self) -> u32 {
@@ -99,58 +141,296 @@ impl<S: Into<String>> From<S> for SymbolSpec {
     }
 }
 
-/// Generate SF Symbol PNG assets for a list of symbol names using default settings.
+/// Which tier resolved a given symbol's assets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolResolution {
+    /// `sfsym` produced live PNG + SVG output for this symbol.
+    Sf,
+    /// PNG + SVG were copied from the committed `polysym-assets/` cache.
+    Cached,
+    /// PNG + SVG were derived from a Lucide tier-3 fallback.
+    Lucide,
+    /// No tier produced output; the symbol is omitted from the generated API.
+    Missing,
+}
+
+/// Generate SF Symbol assets for a list of symbol names using default settings.
 ///
 /// Symbols are exported at 20pt (40×40 px at 2x) with 12% padding per side,
-/// in both light (black) and dark (white) variants. Call this from your app's
-/// `build.rs` before `tauri_build::build()`.
+/// in both light (black) and dark (white) variants. No Lucide fallback is
+/// configured — pass [`SymbolSpec::lucide`] explicitly via [`generate_with_opts`]
+/// if you want cross-platform tier-3 graceful degradation.
 pub fn generate(symbols: &[&str]) {
     let specs: Vec<SymbolSpec> = symbols.iter().map(|&s| SymbolSpec::new(s)).collect();
     generate_with_opts(&specs);
 }
 
 /// Generate SF Symbol PNG and SVG assets with full control over each symbol's options.
+///
+/// See the crate-level documentation for the three-tier resolution algorithm
+/// and the `POLYSYM_REFRESH` environment variable.
 pub fn generate_with_opts(specs: &[SymbolSpec]) {
-    let sfsym = find_sfsym();
-
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR not set"));
     let symbol_dir = out_dir.join("polysym");
     std::fs::create_dir_all(&symbol_dir).expect("failed to create polysym output dir");
 
+    let manifest_dir =
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set"));
+    let assets_dir = manifest_dir.join("polysym-assets");
+
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-env-changed=POLYSYM_REFRESH");
+    println!("cargo::rerun-if-changed={}", assets_dir.display());
 
-    // PNG — light: monochrome black; dark: hierarchical white.
-    // (monochrome mode in sfsym ignores --color and always outputs black;
-    // hierarchical respects it, so we use it for the white dark variant.)
-    let light_batch = build_png_batch_input(specs, &symbol_dir, "light", "monochrome", "#000000");
-    let dark_batch = build_png_batch_input(specs, &symbol_dir, "dark", "hierarchical", "#ffffff");
+    let refresh = std::env::var("POLYSYM_REFRESH").is_ok_and(|v| !v.is_empty() && v != "0");
 
-    run_batch(&sfsym, &light_batch, "light PNG");
-    run_batch(&sfsym, &dark_batch, "dark PNG");
+    // Validate Lucide names early so a typo fails the build with a clear error
+    // before any subprocess work happens.
+    let lucide_client = LucideClient::new(ICONS_TAR)
+        .expect("failed to open bundled Lucide icon archive (lucide-svg-rs ICONS_TAR)");
+    let valid_lucide: HashSet<String> = lucide_client
+        .list_icons()
+        .expect("failed to list bundled Lucide icons")
+        .into_iter()
+        .collect();
 
-    // Post-process PNGs: composite each symbol into a padded canvas with @2x DPI metadata.
+    let mut bad_lucide = false;
     for spec in specs {
-        for variant in ["light", "dark"] {
-            let path = symbol_dir.join(format!("{}.{}.png", spec.name, variant));
-            apply_padding(&path, spec);
+        if let Some(lname) = &spec.lucide
+            && !valid_lucide.contains(lname)
+        {
+            println!(
+                "cargo::error=polysym: '{}' is not a valid Lucide icon name \
+                 (configured as fallback for SF symbol '{}'). \
+                 Run `lucide-svg-rs list` to see available names.",
+                lname, spec.name,
+            );
+            bad_lucide = true;
         }
     }
+    // Cargo will fail the build when it sees the cargo::error lines above;
+    // bailing here avoids spending more time on a doomed build.
+    assert!(
+        !bad_lucide,
+        "polysym: one or more .lucide() fallback names are invalid; see cargo errors above",
+    );
 
-    // SVG — monochrome black, then post-process for currentColor + normalized viewBox.
-    // A single variant is sufficient: callers style it via the CSS `color` property.
-    let svg_batch = build_svg_batch_input(specs, &symbol_dir);
-    run_batch(&sfsym, &svg_batch, "SVG");
+    let sfsym = find_sfsym();
 
+    // Tier 1: try sfsym for everything. The set returned contains symbols for
+    // which sfsym successfully produced light PNG, dark PNG, and SVG output.
+    let sfsym_succeeded: HashSet<String> = if let Some(ref sfsym_path) = sfsym {
+        run_sfsym_for_all(sfsym_path, specs, &symbol_dir)
+    } else {
+        HashSet::new()
+    };
+
+    // Resolve each symbol through the three tiers and post-process / write
+    // the final files into OUT_DIR.
+    let mut resolutions: Vec<(SymbolSpec, SymbolResolution)> = Vec::with_capacity(specs.len());
     for spec in specs {
-        let path = symbol_dir.join(format!("{}.svg", spec.name));
-        let info = query_symbol_info(&sfsym, &spec.name);
-        apply_svg_postprocess(&path, spec, info.as_ref());
+        let resolution = if sfsym_succeeded.contains(&spec.name) {
+            finalize_sfsym_assets(spec, &symbol_dir, sfsym.as_deref());
+            if refresh {
+                copy_to_assets_dir(spec, &symbol_dir, &assets_dir);
+            }
+            check_stale_asset(spec, &symbol_dir, &assets_dir);
+            SymbolResolution::Sf
+        } else if try_copy_from_assets(spec, &symbol_dir, &assets_dir) {
+            println!(
+                "cargo::warning=polysym: '{}' using committed cache (sfsym unavailable or failed)",
+                spec.name,
+            );
+            SymbolResolution::Cached
+        } else if let Some(lname) = &spec.lucide {
+            let svg = lucide_client.get_icon_content(lname).unwrap_or_else(|e| {
+                panic!(
+                    "polysym: failed to load Lucide fallback '{}' for symbol '{}': {e}",
+                    lname, spec.name,
+                )
+            });
+            write_lucide_assets(&svg, spec, &symbol_dir);
+            println!("cargo::warning=polysym: '{}' using Lucide fallback '{}'", spec.name, lname,);
+            SymbolResolution::Lucide
+        } else {
+            println!(
+                "cargo::warning=polysym: '{}' has no asset and no .lucide() fallback - omitted",
+                spec.name,
+            );
+            SymbolResolution::Missing
+        };
+        resolutions.push((spec.clone(), resolution));
     }
 
     let generated_path = out_dir.join("polysym_generated.rs");
-    let generated_source = build_generated_source(specs, &symbol_dir);
+    let generated_source = build_generated_source(&resolutions, &symbol_dir);
     std::fs::write(&generated_path, generated_source)
         .expect("failed to write polysym_generated.rs");
+}
+
+/// Post-process raw sfsym output (PNG padding + SVG normalization) for one symbol.
+fn finalize_sfsym_assets(spec: &SymbolSpec, symbol_dir: &Path, sfsym: Option<&Path>) {
+    for variant in ["light", "dark"] {
+        let path = symbol_dir.join(format!("{}.{}.png", spec.name, variant));
+        apply_padding(&path, spec);
+    }
+    let svg_path = symbol_dir.join(format!("{}.svg", spec.name));
+    let info = sfsym.and_then(|s| query_symbol_info(s, &spec.name));
+    apply_svg_postprocess(&svg_path, spec, info.as_ref());
+}
+
+/// Run all three sfsym batches and report which symbols fully succeeded.
+///
+/// Returns an empty set if any batch fails entirely; otherwise verifies on a
+/// per-symbol basis that all three output files exist (some symbols may be
+/// invalid SF Symbol names and silently skipped by sfsym).
+fn run_sfsym_for_all(sfsym: &Path, specs: &[SymbolSpec], symbol_dir: &Path) -> HashSet<String> {
+    let light_batch = build_png_batch_input(specs, symbol_dir, "light", "monochrome", "#000000");
+    let dark_batch = build_png_batch_input(specs, symbol_dir, "dark", "hierarchical", "#ffffff");
+    let svg_batch = build_svg_batch_input(specs, symbol_dir);
+
+    let light_ok = run_batch(sfsym, &light_batch, "light PNG");
+    let dark_ok = run_batch(sfsym, &dark_batch, "dark PNG");
+    let svg_ok = run_batch(sfsym, &svg_batch, "SVG");
+
+    if !(light_ok && dark_ok && svg_ok) {
+        return HashSet::new();
+    }
+
+    let mut succeeded = HashSet::new();
+    for spec in specs {
+        let light = symbol_dir.join(format!("{}.light.png", spec.name));
+        let dark = symbol_dir.join(format!("{}.dark.png", spec.name));
+        let svg = symbol_dir.join(format!("{}.svg", spec.name));
+        if light.exists() && dark.exists() && svg.exists() {
+            succeeded.insert(spec.name.clone());
+        }
+    }
+    succeeded
+}
+
+/// Mirror finalized `OUT_DIR` assets for a symbol into the committed cache.
+fn copy_to_assets_dir(spec: &SymbolSpec, symbol_dir: &Path, assets_dir: &Path) {
+    if let Err(e) = std::fs::create_dir_all(assets_dir) {
+        println!(
+            "cargo::warning=polysym: could not create assets dir {}: {e}",
+            assets_dir.display(),
+        );
+        return;
+    }
+    for ext in ["light.png", "dark.png", "svg"] {
+        let src = symbol_dir.join(format!("{}.{}", spec.name, ext));
+        let dst = assets_dir.join(format!("{}.{}", spec.name, ext));
+        if let Err(e) = std::fs::copy(&src, &dst) {
+            println!(
+                "cargo::warning=polysym: failed to mirror {} to {}: {e}",
+                src.display(),
+                dst.display(),
+            );
+        }
+    }
+}
+
+/// Try to copy committed cache assets into `OUT_DIR`. Returns `true` if all three
+/// files (light PNG, dark PNG, SVG) were present and copied successfully.
+fn try_copy_from_assets(spec: &SymbolSpec, symbol_dir: &Path, assets_dir: &Path) -> bool {
+    let parts = ["light.png", "dark.png", "svg"];
+    if !parts.iter().all(|ext| assets_dir.join(format!("{}.{}", spec.name, ext)).is_file()) {
+        return false;
+    }
+    for ext in parts {
+        let src = assets_dir.join(format!("{}.{}", spec.name, ext));
+        let dst = symbol_dir.join(format!("{}.{}", spec.name, ext));
+        if let Err(e) = std::fs::copy(&src, &dst) {
+            println!(
+                "cargo::warning=polysym: failed to copy cached {} to {}: {e}",
+                src.display(),
+                dst.display(),
+            );
+            return false;
+        }
+    }
+    true
+}
+
+/// Compare freshly generated tier-1 assets against the committed cache and
+/// warn if they would differ. Only meaningful on macOS dev machines where
+/// `sfsym` actually ran; silently no-ops elsewhere.
+fn check_stale_asset(spec: &SymbolSpec, symbol_dir: &Path, assets_dir: &Path) {
+    let mut stale = Vec::new();
+    for ext in ["light.png", "dark.png", "svg"] {
+        let fresh = symbol_dir.join(format!("{}.{}", spec.name, ext));
+        let cached = assets_dir.join(format!("{}.{}", spec.name, ext));
+        let differs = match (std::fs::read(&fresh), std::fs::read(&cached)) {
+            (Ok(f), Ok(c)) => f != c,
+            (Ok(_), Err(_)) => true,
+            // If we can't read the fresh output something else has gone wrong;
+            // skip the stale check rather than emit confusing warnings.
+            _ => false,
+        };
+        if differs {
+            stale.push(ext);
+        }
+    }
+    if !stale.is_empty() {
+        println!(
+            "cargo::warning=polysym: '{}' has stale or missing committed asset(s) [{}] - \
+             run scripts/polysym-refresh.sh before commit",
+            spec.name,
+            stale.join(", "),
+        );
+    }
+}
+
+/// Write a Lucide-derived SVG and rasterize PNG variants for one symbol.
+///
+/// The SVG is normalized for inline use (drop hardcoded width/height so CSS
+/// can size it). The PNGs are produced by replacing `currentColor` with black
+/// or white and rendering through resvg, then run through the same padding +
+/// pHYs metadata pipeline as tier-1/tier-2 PNGs so they behave identically in
+/// `IconMenuItem`.
+fn write_lucide_assets(svg: &str, spec: &SymbolSpec, symbol_dir: &Path) {
+    let svg_path = symbol_dir.join(format!("{}.svg", spec.name));
+    let normalized_svg = rewrite_svg_tag(svg, spec, None);
+    std::fs::write(&svg_path, &normalized_svg).unwrap_or_else(|e| {
+        panic!("polysym: failed to write Lucide SVG {}: {e}", svg_path.display())
+    });
+
+    for (variant, color) in [("light", "#000000"), ("dark", "#ffffff")] {
+        let png_path = symbol_dir.join(format!("{}.{}.png", spec.name, variant));
+        let colored = svg.replace("currentColor", color);
+        let png_bytes = rasterize_svg_to_png(&colored, spec);
+        std::fs::write(&png_path, &png_bytes).unwrap_or_else(|e| {
+            panic!("polysym: failed to write Lucide PNG {}: {e}", png_path.display())
+        });
+        apply_padding(&png_path, spec);
+    }
+}
+
+/// Render the given SVG into a square `inner_size * 2` pixel PNG byte buffer.
+///
+/// The output has no `pHYs` chunk; [`apply_padding`] will composite it into the
+/// final padded canvas and add the @2x metadata.
+#[allow(clippy::cast_precision_loss)]
+fn rasterize_svg_to_png(svg: &str, spec: &SymbolSpec) -> Vec<u8> {
+    let opt = usvg::Options::default();
+    let tree = usvg::Tree::from_str(svg, &opt)
+        .unwrap_or_else(|e| panic!("polysym: failed to parse Lucide SVG for '{}': {e}", spec.name));
+
+    let inner_px = spec.inner_size() * 2;
+    let mut pixmap = tiny_skia::Pixmap::new(inner_px, inner_px)
+        .unwrap_or_else(|| panic!("polysym: failed to allocate pixmap for '{}'", spec.name));
+
+    let svg_size = tree.size();
+    let target = inner_px as f32;
+    let scale = target / svg_size.width().max(svg_size.height());
+    let transform = tiny_skia::Transform::from_scale(scale, scale);
+
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    pixmap
+        .encode_png()
+        .unwrap_or_else(|e| panic!("polysym: failed to encode Lucide PNG for '{}': {e}", spec.name))
 }
 
 /// Composite the symbol PNG (rendered at `inner_size`) into a larger transparent
@@ -167,9 +447,8 @@ fn apply_padding(path: &Path, spec: &SymbolSpec) {
     use std::io::BufWriter;
 
     let canvas_px = spec.canvas_px();
-    let inner_px = spec.inner_size() * 2; // sfsym exports at 2x
+    let inner_px = spec.inner_size() * 2;
 
-    // No compositing needed — sfsym's output already has correct @2x pHYs.
     if canvas_px <= inner_px {
         return;
     }
@@ -183,8 +462,6 @@ fn apply_padding(path: &Path, spec: &SymbolSpec) {
     let y_off = (canvas_px - src.height()) / 2;
     image::imageops::overlay(&mut canvas, &src, i64::from(x_off), i64::from(y_off));
 
-    // Write with the raw png encoder so we can inject the pHYs chunk.
-    // image::save() would produce a plain 72 DPI PNG, stripping the @2x metadata.
     let file = std::fs::File::create(path)
         .unwrap_or_else(|e| panic!("failed to open {} for writing: {e}", path.display()));
 
@@ -196,7 +473,6 @@ fn apply_padding(path: &Path, spec: &SymbolSpec) {
         enc.write_header().unwrap_or_else(|e| panic!("PNG header for {}: {e}", path.display()));
 
     // pHYs chunk: 5669 pixels/meter ≈ 144 DPI = @2x Retina.
-    // This makes NSImage interpret canvas_px pixels as canvas_px/2 logical points.
     #[allow(clippy::items_after_statements)]
     const PPM_2X: u32 = 5669;
     let mut phys = [0u8; 9];
@@ -212,31 +488,29 @@ fn apply_padding(path: &Path, spec: &SymbolSpec) {
         .unwrap_or_else(|e| panic!("PNG data for {}: {e}", path.display()));
 }
 
-/// Locate the `sfsym` binary, searching common install locations.
-fn find_sfsym() -> PathBuf {
+/// Locate the `sfsym` binary, returning `None` if it is not installed.
+///
+/// Searches `PATH` plus common Homebrew and manual install locations so it
+/// works inside Cargo build environments that may have a stripped `PATH`.
+fn find_sfsym() -> Option<PathBuf> {
     let candidates = ["sfsym", "/usr/local/bin/sfsym", "/opt/homebrew/bin/sfsym", "/usr/bin/sfsym"];
 
     for candidate in candidates {
-        if let Ok(output) = Command::new(candidate).arg("--version").output() {
-            if output.status.success() {
-                return PathBuf::from(candidate);
-            }
+        if let Ok(output) = Command::new(candidate).arg("--version").output()
+            && output.status.success()
+        {
+            return Some(PathBuf::from(candidate));
         }
     }
 
     if let Ok(home) = std::env::var("HOME") {
         let local_bin = PathBuf::from(home).join(".local/bin/sfsym");
         if local_bin.exists() {
-            return local_bin;
+            return Some(local_bin);
         }
     }
 
-    println!(
-        "cargo::error=`sfsym` was not found. \
-        Install it with: brew install yapstudios/tap/sfsym\n\
-        Or from source: https://github.com/yapstudios/sfsym"
-    );
-    panic!("`sfsym` not found — see cargo output for install instructions");
+    None
 }
 
 /// Build the stdin batch input for `sfsym batch` for one PNG appearance variant.
@@ -269,10 +543,6 @@ fn build_png_batch_input(
 }
 
 /// Build the stdin batch input for `sfsym batch` for SVG export.
-///
-/// Uses monochrome black at the full canvas size (no padding reduction needed —
-/// SVGs are vector and callers control size via CSS). Color is replaced with
-/// `currentColor` in a post-processing step.
 fn build_svg_batch_input(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
     let mut batch = String::new();
     for spec in specs {
@@ -302,10 +572,6 @@ fn query_symbol_info(sfsym: &Path, name: &str) -> Option<SymbolInfo> {
         return None;
     }
 
-    // Minimal JSON parse — avoid pulling in serde just for build-time use.
-    // Extract from each section independently to avoid occurrence-counting
-    // ambiguity: the JSON always emits "alignmentRect" before "size", and
-    // both sections contain "width" and "height" keys.
     let json = std::str::from_utf8(&output.stdout).ok()?;
 
     let ar_section = section_after(json, "\"alignmentRect\"")?;
@@ -338,7 +604,6 @@ fn extract_json_f64(json: &str, key: &str, occurrence: usize) -> Option<f64> {
         let pos = remaining.find(needle.as_str())?;
         remaining = &remaining[pos + needle.len()..];
         if count == occurrence {
-            // Skip whitespace, then parse the number.
             let trimmed = remaining.trim_start();
             let end = trimmed.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')?;
             return trimmed[..end].parse().ok();
@@ -353,16 +618,10 @@ fn extract_json_f64(json: &str, key: &str, occurrence: usize) -> Option<f64> {
 /// 2. Strip the baked-in `width`/`height` attributes so CSS controls size.
 /// 3. Rewrite `viewBox` to a tight square crop around the glyph's alignment
 ///    rect, normalizing optical size across symbols with different aspect ratios.
-///
-/// Step 3 is the key one: sfsym always produces a square canvas, but symbols
-/// like `book` are naturally wide and short, so their glyph only fills a
-/// fraction of the canvas height. The tight viewBox makes every symbol appear
-/// at consistent visual weight when displayed at the same CSS size.
 fn apply_svg_postprocess(path: &Path, spec: &SymbolSpec, info: Option<&SymbolInfo>) {
     let svg = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read SVG {}: {e}", path.display()));
 
-    // Step 1: currentColor.
     let updated = svg
         .replace("fill=\"#000000\"", "fill=\"currentColor\"")
         .replace("fill=\"#000\"", "fill=\"currentColor\"")
@@ -373,33 +632,25 @@ fn apply_svg_postprocess(path: &Path, spec: &SymbolSpec, info: Option<&SymbolInf
         .replace("stroke='#000000'", "stroke='currentColor'")
         .replace("stroke='#000'", "stroke='currentColor'");
 
-    // Steps 2 + 3: rewrite the <svg> opening tag.
     let updated = rewrite_svg_tag(&updated, spec, info);
 
     std::fs::write(path, updated)
         .unwrap_or_else(|e| panic!("failed to write SVG {}: {e}", path.display()));
 }
 
-/// Rewrite the opening `<svg ...>` tag: strip `width`/`height` and set a
-/// normalized `viewBox` derived from the glyph's alignment rect.
+/// Rewrite the opening `<svg ...>` tag: strip `width`/`height` and (when
+/// `info` is provided) set a normalized `viewBox` derived from the glyph's
+/// alignment rect.
 ///
-/// If `info` is `None` (sfsym info failed), falls back to just stripping the
-/// dimension attributes and leaving the original viewBox intact.
+/// If `info` is `None`, the original viewBox is preserved.
 fn rewrite_svg_tag(svg: &str, spec: &SymbolSpec, info: Option<&SymbolInfo>) -> String {
-    // Skip past any XML declaration (<?xml...?>) to find the <svg opening tag,
-    // then find its closing >. Using svg.find('>') alone would stop at the ?>
-    // in the XML declaration, causing the entire rewrite to silently no-op.
     let svg_tag_start = svg.find("<svg").unwrap_or(0);
-    let tag_end = svg[svg_tag_start..].find('>').map(|p| svg_tag_start + p).unwrap_or(svg.len());
+    let tag_end = svg[svg_tag_start..].find('>').map_or(svg.len(), |p| svg_tag_start + p);
     let rest = &svg[tag_end..];
 
-    // Build the new viewBox value from alignment rect geometry.
     let viewbox = info.map(|info| {
         let canvas = f64::from(spec.size);
 
-        // sfsym scales the symbol to fit the square canvas, preserving aspect
-        // ratio and centering it. Reproduce that transform to get the
-        // alignmentRect in canvas coordinate space.
         let scale = (canvas / info.natural_width).min(canvas / info.natural_height);
         let rendered_w = info.natural_width * scale;
         let rendered_h = info.natural_height * scale;
@@ -415,13 +666,6 @@ fn rewrite_svg_tag(svg: &str, spec: &SymbolSpec, info: Option<&SymbolInfo>) -> S
         let cy = ar_y + ar_h / 2.0;
         let pad = f64::from(spec.padding) * canvas;
 
-        // SF Symbols use the alignment rect HEIGHT as the optical size axis
-        // (analogous to cap-height in typography). Size the square viewBox by
-        // ar_h + padding so that all symbols normalize by height, giving
-        // visually consistent sizes in horizontal layouts.
-        //
-        // For unusually wide symbols (ar_w/2 > ar_h/2 + pad), fall back to
-        // width-driven sizing so the glyph is never clipped at the sides.
         let half = f64::max(ar_h / 2.0 + pad, ar_w / 2.0);
 
         let vx = cx - half;
@@ -431,13 +675,11 @@ fn rewrite_svg_tag(svg: &str, spec: &SymbolSpec, info: Option<&SymbolInfo>) -> S
         format!("{vx:.4} {vy:.4} {vsize:.4} {vsize:.4}")
     });
 
-    // Reconstruct the tag: copy everything except width/height/viewBox attrs.
     let tag = &svg[..tag_end];
     let mut out = String::with_capacity(svg.len());
     let mut remaining = tag;
 
     while !remaining.is_empty() {
-        // Find the next attribute we want to drop or replace.
         let next = [" width=\"", " height=\"", " viewBox=\""]
             .iter()
             .filter_map(|prefix| remaining.find(prefix).map(|pos| (pos, *prefix)))
@@ -451,19 +693,14 @@ fn rewrite_svg_tag(svg: &str, spec: &SymbolSpec, info: Option<&SymbolInfo>) -> S
             Some((pos, prefix)) => {
                 out.push_str(&remaining[..pos]);
                 remaining = &remaining[pos + prefix.len()..];
-                // For viewBox: capture the original value before advancing,
-                // so the fallback can re-emit it if sfsym info wasn't available.
                 let original_viewbox = if prefix == " viewBox=\"" {
                     remaining.split('"').next().map(str::to_string)
                 } else {
                     None
                 };
-                // Skip past the closing quote of this attribute's value.
                 if let Some(close) = remaining.find('"') {
                     remaining = &remaining[close + 1..];
                 }
-                // Re-inject viewBox with our computed (or original) value.
-                // width and height are silently dropped.
                 if prefix == " viewBox=\"" {
                     let vb = viewbox.as_deref().or(original_viewbox.as_deref()).unwrap_or("");
                     write!(out, " viewBox=\"{vb}\"").unwrap();
@@ -476,34 +713,52 @@ fn rewrite_svg_tag(svg: &str, spec: &SymbolSpec, info: Option<&SymbolInfo>) -> S
     out
 }
 
-/// Run `sfsym batch` with the given stdin input, panicking on failure.
-fn run_batch(sfsym: &Path, batch_input: &str, variant: &str) {
+/// Run `sfsym batch` with the given stdin input. Returns `true` on success.
+///
+/// Emits a `cargo::warning` (not a panic) on failure so callers can decide
+/// whether to fall through to tier-2 / tier-3 resolution.
+fn run_batch(sfsym: &Path, batch_input: &str, variant: &str) -> bool {
     use std::io::Write;
     use std::process::Stdio;
 
-    let mut child = Command::new(sfsym)
+    let mut child = match Command::new(sfsym)
         .arg("batch")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .unwrap_or_else(|e| panic!("failed to spawn sfsym for {variant} variant: {e}"));
+    {
+        Ok(c) => c,
+        Err(e) => {
+            println!("cargo::warning=polysym: failed to spawn sfsym for {variant} variant: {e}");
+            return false;
+        }
+    };
 
-    child
-        .stdin
-        .take()
-        .expect("sfsym stdin not captured")
-        .write_all(batch_input.as_bytes())
-        .expect("failed to write to sfsym stdin");
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Err(e) = stdin.write_all(batch_input.as_bytes()) {
+            println!("cargo::warning=polysym: failed to write to sfsym stdin ({variant}): {e}");
+            return false;
+        }
+    } else {
+        println!("cargo::warning=polysym: could not capture sfsym stdin for {variant}");
+        return false;
+    }
 
-    let output = child
-        .wait_with_output()
-        .unwrap_or_else(|e| panic!("sfsym batch ({variant}) did not complete: {e}"));
+    let output = match child.wait_with_output() {
+        Ok(o) => o,
+        Err(e) => {
+            println!("cargo::warning=polysym: sfsym batch ({variant}) did not complete: {e}");
+            return false;
+        }
+    };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("sfsym batch failed for {variant} variant:\n{stderr}");
+        println!("cargo::warning=polysym: sfsym batch failed for {variant} variant: {stderr}");
+        return false;
     }
+    true
 }
 
 /// Convert an SF Symbol name to a valid Rust method name.
@@ -514,7 +769,14 @@ fn symbol_to_method_name(name: &str) -> String {
 }
 
 /// Generate the Rust source file that consumers `include!` into their codebase.
-fn build_generated_source(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
+///
+/// `Missing` symbols are skipped entirely from the generated API (no typed
+/// methods, no match arms). Consumers using `SfIcons::get(name)` /
+/// `SfIcons::get_svg(name)` will receive `None` for them.
+fn build_generated_source(
+    resolutions: &[(SymbolSpec, SymbolResolution)],
+    symbol_dir: &Path,
+) -> String {
     let mut src = String::new();
 
     src.push_str("// Auto-generated by polysym-build. Do not edit.\n");
@@ -523,7 +785,12 @@ fn build_generated_source(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
     src.push_str("#[allow(dead_code)]\n");
     src.push_str("impl SfIcons {\n");
 
-    for spec in specs {
+    let resolved: Vec<&SymbolSpec> = resolutions
+        .iter()
+        .filter_map(|(spec, res)| if *res == SymbolResolution::Missing { None } else { Some(spec) })
+        .collect();
+
+    for spec in &resolved {
         let method = symbol_to_method_name(&spec.name);
         let light_path = symbol_dir.join(format!("{}.light.png", spec.name));
         let dark_path = symbol_dir.join(format!("{}.dark.png", spec.name));
@@ -550,11 +817,12 @@ fn build_generated_source(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
     // PNG dynamic lookup
     src.push_str(
         "    /// Look up a symbol's PNG pair by SF Symbol name (e.g. `\"trash\"`).\n\
-         /// Returns `None` if the name was not included in the build manifest.\n\
+         /// Returns `None` if the name was not included in the build manifest\n\
+         /// or had no available asset (sfsym, cache, or Lucide).\n\
          pub fn get(name: &str) -> Option<::polysym::SfImage> {\n\
              match name {\n",
     );
-    for spec in specs {
+    for spec in &resolved {
         let method = symbol_to_method_name(&spec.name);
         writeln!(src, "            {:?} => Some(Self::{}()),", spec.name, method).unwrap();
     }
@@ -563,12 +831,13 @@ fn build_generated_source(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
     // SVG dynamic lookup
     src.push_str(
         "    /// Look up a symbol's SVG string by SF Symbol name (e.g. `\"trash\"`).\n\
-         /// Returns `None` if the name was not included in the build manifest.\n\
+         /// Returns `None` if the name was not included in the build manifest\n\
+         /// or had no available asset (sfsym, cache, or Lucide).\n\
          /// The SVG uses `currentColor` fill — set the CSS `color` property to tint it.\n\
          pub fn get_svg(name: &str) -> Option<&'static str> {\n\
              match name {\n",
     );
-    for spec in specs {
+    for spec in &resolved {
         let method = symbol_to_method_name(&spec.name);
         writeln!(src, "            {:?} => Some(Self::{}_svg()),", spec.name, method).unwrap();
     }
