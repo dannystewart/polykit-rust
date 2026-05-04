@@ -345,6 +345,12 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
     );
 
     let sfsym = find_sfsym();
+    // Refresh-related warnings ("run scripts/polysym-refresh.sh") only make
+    // sense on a machine that can actually run the refresh. On Windows/Linux
+    // - and on a Mac without sfsym installed - the committed cache is the
+    // expected resolution path, and these warnings are noise the user can't
+    // act on.
+    let sfsym_available = sfsym.is_some();
 
     // Tier 1: try sfsym for everything. The set returned contains symbols for
     // which sfsym successfully produced light PNG, dark PNG, and SVG output.
@@ -359,7 +365,7 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
     let manifest_status = read_manifest(&assets_dir);
     let assets_dir_populated =
         assets_dir.exists() && std::fs::read_dir(&assets_dir).is_ok_and(|mut d| d.next().is_some());
-    if !refresh {
+    if !refresh && sfsym_available {
         match &manifest_status {
             ManifestStatus::Outdated { found } => {
                 println!(
@@ -395,15 +401,21 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
                 copy_to_assets_dir(spec, &symbol_dir, &assets_dir);
                 new_manifest.push((spec.name.clone(), spec_signature(spec)));
             } else {
-                check_committed_asset(spec, &assets_dir, manifest_entries);
+                check_committed_asset(spec, &assets_dir, manifest_entries, sfsym_available);
             }
             SymbolResolution::Sf
         } else if try_copy_from_assets(spec, &symbol_dir, &assets_dir) {
-            println!(
-                "cargo::warning=polysym: '{}' using committed cache (sfsym unavailable or failed)",
-                spec.name,
-            );
-            check_committed_asset(spec, &assets_dir, manifest_entries);
+            // Tier-2 hit. On a machine without sfsym this is the expected
+            // happy path - silent. If sfsym IS available, hitting tier-2
+            // means sfsym was tried and failed for this specific symbol,
+            // which is worth surfacing.
+            if sfsym_available {
+                println!(
+                    "cargo::warning=polysym: '{}' fell back to committed cache - sfsym was available but did not produce output for this symbol",
+                    spec.name,
+                );
+            }
+            check_committed_asset(spec, &assets_dir, manifest_entries, sfsym_available);
             SymbolResolution::Cached
         } else if let Some(lname) = &spec.lucide {
             let svg = lucide_client.get_icon_content(lname).unwrap_or_else(|e| {
@@ -536,11 +548,20 @@ fn try_copy_from_assets(spec: &SymbolSpec, symbol_dir: &Path, assets_dir: &Path)
 /// inconsequential ways between runs, and the manifest captures everything
 /// that semantically affects the rendered icon (size, weight, padding, plus
 /// the global pipeline format version).
+///
+/// All warnings are gated on `sfsym_available` because they direct the user
+/// to run `polysym-refresh.sh`, which is only meaningful on a Mac with sfsym
+/// installed. Builds on Windows/Linux silently use whatever cache they have.
 fn check_committed_asset(
     spec: &SymbolSpec,
     assets_dir: &Path,
     manifest: Option<&std::collections::HashMap<String, String>>,
+    sfsym_available: bool,
 ) {
+    if !sfsym_available {
+        return;
+    }
+
     let missing: Vec<&str> = ["light.png", "dark.png", "svg"]
         .into_iter()
         .filter(|ext| !assets_dir.join(format!("{}.{}", spec.name, ext)).exists())
