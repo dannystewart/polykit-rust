@@ -375,7 +375,11 @@ fn apply_svg_postprocess(path: &Path, spec: &SymbolSpec, info: Option<&SymbolInf
 /// If `info` is `None` (sfsym info failed), falls back to just stripping the
 /// dimension attributes and leaving the original viewBox intact.
 fn rewrite_svg_tag(svg: &str, spec: &SymbolSpec, info: Option<&SymbolInfo>) -> String {
-    let tag_end = svg.find('>').unwrap_or(svg.len());
+    // Skip past any XML declaration (<?xml...?>) to find the <svg opening tag,
+    // then find its closing >. Using svg.find('>') alone would stop at the ?>
+    // in the XML declaration, causing the entire rewrite to silently no-op.
+    let svg_tag_start = svg.find("<svg").unwrap_or(0);
+    let tag_end = svg[svg_tag_start..].find('>').map(|p| svg_tag_start + p).unwrap_or(svg.len());
     let rest = &svg[tag_end..];
 
     // Build the new viewBox value from alignment rect geometry.
@@ -396,15 +400,22 @@ fn rewrite_svg_tag(svg: &str, spec: &SymbolSpec, info: Option<&SymbolInfo>) -> S
         let ar_w = info.align_w * scale;
         let ar_h = info.align_h * scale;
 
-        // Expand to a square centered on the alignment rect, then add padding.
         let cx = ar_x + ar_w / 2.0;
         let cy = ar_y + ar_h / 2.0;
-        let half = f64::max(ar_w, ar_h) / 2.0;
         let pad = f64::from(spec.padding) * canvas;
 
-        let vx = cx - half - pad;
-        let vy = cy - half - pad;
-        let vsize = (half + pad) * 2.0;
+        // SF Symbols use the alignment rect HEIGHT as the optical size axis
+        // (analogous to cap-height in typography). Size the square viewBox by
+        // ar_h + padding so that all symbols normalize by height, giving
+        // visually consistent sizes in horizontal layouts.
+        //
+        // For unusually wide symbols (ar_w/2 > ar_h/2 + pad), fall back to
+        // width-driven sizing so the glyph is never clipped at the sides.
+        let half = f64::max(ar_h / 2.0 + pad, ar_w / 2.0);
+
+        let vx = cx - half;
+        let vy = cy - half;
+        let vsize = half * 2.0;
 
         format!("{vx:.4} {vy:.4} {vsize:.4} {vsize:.4}")
     });
