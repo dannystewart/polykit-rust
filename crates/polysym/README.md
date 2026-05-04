@@ -114,9 +114,11 @@ Then in Svelte (the return type `number[]` is accepted directly by `IconMenuItem
 
 ```ts
 import { invoke } from "@tauri-apps/api/core"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 import { IconMenuItem, Menu } from "@tauri-apps/api/menu"
 
-const trashIcon = await invoke<number[]>("sf_icon", { name: "trash" }).catch(() => undefined)
+const dark = (await getCurrentWindow().theme()) === "dark"
+const trashIcon = await invoke<number[]>("sf_icon", { name: "trash", dark }).catch(() => undefined)
 
 const deleteItem = await IconMenuItem.new({
     id: "delete-conversation",
@@ -126,7 +128,18 @@ const deleteItem = await IconMenuItem.new({
 })
 ```
 
-The `.catch(() => undefined)` is a safe fallback: if `sf_icon` fails (e.g. in a web dev build without the Tauri runtime), the menu item renders without an icon rather than throwing.
+Passing `dark` explicitly from the JS side is more reliable than letting the Rust command detect appearance via a subprocess — Tauri's window theme API is the authoritative source. The `.catch(() => undefined)` is a safe fallback: if `sf_icon` fails (e.g. in a web dev build without the Tauri runtime), the menu item renders without an icon rather than throwing.
+
+The corresponding Tauri command signature should accept the `dark` flag and call `bytes_for`:
+
+```rust
+#[tauri::command]
+fn sf_icon(name: String, dark: bool) -> Result<Vec<u8>, String> {
+    SfIcons::get(&name)
+        .map(|img| img.bytes_for(dark).to_vec())
+        .ok_or_else(|| format!("sf symbol not registered: {name}"))
+}
+```
 
 ## Custom size and weight
 

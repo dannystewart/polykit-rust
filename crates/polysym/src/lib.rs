@@ -40,12 +40,33 @@ impl SfImage {
         Self { light, dark }
     }
 
-    /// Return the appropriate PNG bytes for the current system appearance.
-    pub fn bytes(&self) -> &'static [u8] {
-        if is_dark_mode() { self.dark } else { self.light }
+    /// Return the PNG bytes for an explicit appearance choice.
+    ///
+    /// Prefer this over [`bytes`](Self::bytes) when the caller already knows the
+    /// current appearance (e.g. passed in from the JS side via Tauri's window
+    /// theme API), since it avoids the subprocess launched by [`is_dark_mode`].
+    pub fn bytes_for(&self, dark_mode: bool) -> &'static [u8] {
+        if dark_mode { self.dark } else { self.light }
     }
 
-    /// Convert to a `tauri::image::Image` for the current system appearance.
+    /// Return the appropriate PNG bytes by auto-detecting the system appearance.
+    ///
+    /// For Rust-side menu construction. When bridging to JS, prefer passing the
+    /// appearance as a parameter and calling [`bytes_for`](Self::bytes_for) instead.
+    pub fn bytes(&self) -> &'static [u8] {
+        self.bytes_for(is_dark_mode())
+    }
+
+    /// Convert to a `tauri::image::Image` for an explicit appearance choice.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PNG bytes cannot be decoded by Tauri.
+    pub fn to_tauri_image_for(&self, dark_mode: bool) -> tauri::Result<Image<'static>> {
+        Image::from_bytes(self.bytes_for(dark_mode))
+    }
+
+    /// Convert to a `tauri::image::Image` by auto-detecting the system appearance.
     ///
     /// # Errors
     ///
@@ -57,16 +78,20 @@ impl SfImage {
 
 /// Returns `true` when the system is currently in dark mode.
 ///
-/// Checked once per call via `defaults read -g AppleInterfaceStyle`. Call this
-/// at menu-build time, not on every render.
+/// Uses `/usr/bin/defaults read -g AppleInterfaceStyle` with the absolute path
+/// to avoid PATH lookup issues inside GUI app processes. Call this at menu-build
+/// time from Rust-side menu construction.
 ///
-/// Returns `false` on any failure (including non-macOS platforms, where the
-/// concept does not apply).
+/// When bridging to JS, prefer getting the theme from Tauri's window API and
+/// calling [`SfImage::bytes_for`] directly — it's more reliable than spawning a
+/// subprocess from within the app process.
+///
+/// Returns `false` on any failure (including non-macOS platforms).
 #[must_use]
 pub fn is_dark_mode() -> bool {
     #[cfg(target_os = "macos")]
     {
-        std::process::Command::new("defaults")
+        std::process::Command::new("/usr/bin/defaults")
             .args(["read", "-g", "AppleInterfaceStyle"])
             .output()
             .map(|o| o.status.success())
