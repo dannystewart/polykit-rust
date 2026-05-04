@@ -80,6 +80,8 @@ POLYSYM_REFRESH=1 cargo check --manifest-path src-tauri/Cargo.toml
 
 Wire that into your pre-commit hook to keep the cache in sync automatically.
 
+To exercise the cross-platform tier-2 / tier-3 paths from a Mac (e.g. when adding a new symbol and you want to confirm the Lucide fallback before pushing), set `POLYSYM_NO_SFSYM=1` to disable tier 1 even when `sfsym` is on PATH.
+
 ### 3. src/icons.rs
 
 Create a module file with a single line:

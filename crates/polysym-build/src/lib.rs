@@ -180,6 +180,7 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
 
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-env-changed=POLYSYM_REFRESH");
+    println!("cargo::rerun-if-env-changed=POLYSYM_NO_SFSYM");
     println!("cargo::rerun-if-changed={}", assets_dir.display());
 
     let refresh = std::env::var("POLYSYM_REFRESH").is_ok_and(|v| !v.is_empty() && v != "0");
@@ -250,7 +251,7 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
                 )
             });
             write_lucide_assets(&svg, spec, &symbol_dir);
-            println!("cargo::warning=polysym: '{}' using Lucide fallback '{}'", spec.name, lname,);
+            println!("cargo::warning=polysym: '{}' using Lucide fallback '{}'", spec.name, lname);
             SymbolResolution::Lucide
         } else {
             println!(
@@ -374,7 +375,7 @@ fn check_stale_asset(spec: &SymbolSpec, symbol_dir: &Path, assets_dir: &Path) {
     }
     if !stale.is_empty() {
         println!(
-            "cargo::warning=polysym: '{}' has stale or missing committed asset(s) [{}] - \
+            "cargo::warning=polysym: '{}' has stale or missing committed assets [{}] - \
              run scripts/polysym-refresh.sh before commit",
             spec.name,
             stale.join(", "),
@@ -493,6 +494,10 @@ fn apply_padding(path: &Path, spec: &SymbolSpec) {
 /// Searches `PATH` plus common Homebrew and manual install locations so it
 /// works inside Cargo build environments that may have a stripped `PATH`.
 fn find_sfsym() -> Option<PathBuf> {
+    if std::env::var_os("POLYSYM_NO_SFSYM").is_some() {
+        return None;
+    }
+
     let candidates = ["sfsym", "/usr/local/bin/sfsym", "/opt/homebrew/bin/sfsym", "/usr/bin/sfsym"];
 
     for candidate in candidates {
