@@ -19,6 +19,21 @@ use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Geometry returned by `sfsym info <name> --json`.
+///
+/// Coordinates are in the symbol's natural (unscaled) point space.
+#[derive(Debug, Clone)]
+struct SymbolInfo {
+    /// Full bounding box of the symbol as rendered by `AppKit`.
+    natural_width: f64,
+    natural_height: f64,
+    /// Alignment rect: the visually meaningful glyph bounds within the full box.
+    align_x: f64,
+    align_y: f64,
+    align_w: f64,
+    align_h: f64,
+}
+
 /// Configuration for a single SF Symbol export.
 #[derive(Debug, Clone)]
 pub struct SymbolSpec {
@@ -66,6 +81,7 @@ impl SymbolSpec {
     }
 
     /// The point size passed to sfsym — smaller than `size` to leave room for padding.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
     fn inner_size(&self) -> u32 {
         let fill = 1.0 - 2.0 * self.padding;
         ((self.size as f32) * fill).round().max(1.0) as u32
@@ -120,14 +136,15 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
         }
     }
 
-    // SVG — monochrome black, then replace with currentColor so CSS controls the color.
+    // SVG — monochrome black, then post-process for currentColor + normalized viewBox.
     // A single variant is sufficient: callers style it via the CSS `color` property.
     let svg_batch = build_svg_batch_input(specs, &symbol_dir);
     run_batch(&sfsym, &svg_batch, "SVG");
 
     for spec in specs {
         let path = symbol_dir.join(format!("{}.svg", spec.name));
-        apply_svg_currentcolor(&path);
+        let info = query_symbol_info(&sfsym, &spec.name);
+        apply_svg_postprocess(&path, spec, info.as_ref());
     }
 
     let generated_path = out_dir.join("polysym_generated.rs");
@@ -136,8 +153,8 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
         .expect("failed to write polysym_generated.rs");
 }
 
-/// Composite the symbol PNG (rendered at inner_size) into a larger transparent
-/// canvas (canvas_px), centering it, and write the result with the @2x Retina
+/// Composite the symbol PNG (rendered at `inner_size`) into a larger transparent
+/// canvas (`canvas_px`), centering it, and write the result with the @2x Retina
 /// `pHYs` DPI metadata chunk preserved.
 ///
 /// Without the `pHYs` chunk, `NSImage` treats the canvas as 1x (e.g. 40×40px
@@ -180,6 +197,7 @@ fn apply_padding(path: &Path, spec: &SymbolSpec) {
 
     // pHYs chunk: 5669 pixels/meter ≈ 144 DPI = @2x Retina.
     // This makes NSImage interpret canvas_px pixels as canvas_px/2 logical points.
+    #[allow(clippy::items_after_statements)]
     const PPM_2X: u32 = 5669;
     let mut phys = [0u8; 9];
     phys[0..4].copy_from_slice(&PPM_2X.to_be_bytes());
@@ -272,25 +290,68 @@ fn build_svg_batch_input(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
     batch
 }
 
-/// Post-process a sfsym SVG: replace hardcoded black fills with `currentColor`
-/// and strip the baked-in `width`/`height` attributes from the `<svg>` tag.
+/// Query `sfsym info <name> --json` and parse the geometry we need.
 ///
-/// **Color:** Makes the icon inherit color from the CSS `color` property so
-/// dark mode, tinting, and hover states all work with pure CSS.
+/// Returns `None` on any failure so callers can fall back to the raw SVG
+/// rather than panicking — the icon will still render, just without viewBox
+/// normalization.
+fn query_symbol_info(sfsym: &Path, name: &str) -> Option<SymbolInfo> {
+    let output = Command::new(sfsym).args(["info", name, "--json"]).output().ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    // Minimal JSON parse — avoid pulling in serde just for build-time use.
+    // The output is compact and predictable; we extract four numeric fields.
+    let json = std::str::from_utf8(&output.stdout).ok()?;
+
+    let natural_width = extract_json_f64(json, "width", 0)?;
+    let natural_height = extract_json_f64(json, "height", 0)?;
+    // alignmentRect fields — find the second occurrence of each key since
+    // "width" and "height" also appear in the top-level "size" object.
+    let align_w = extract_json_f64(json, "width", 1)?;
+    let align_h = extract_json_f64(json, "height", 1)?;
+    let align_x = extract_json_f64(json, "x", 0)?;
+    let align_y = extract_json_f64(json, "y", 0)?;
+
+    Some(SymbolInfo { natural_width, natural_height, align_x, align_y, align_w, align_h })
+}
+
+/// Extract the Nth (0-based) occurrence of `"key" : <number>` from a JSON string.
+fn extract_json_f64(json: &str, key: &str, occurrence: usize) -> Option<f64> {
+    let needle = format!("\"{key}\" :");
+    let mut remaining = json;
+    let mut count = 0;
+    loop {
+        let pos = remaining.find(needle.as_str())?;
+        remaining = &remaining[pos + needle.len()..];
+        if count == occurrence {
+            // Skip whitespace, then parse the number.
+            let trimmed = remaining.trim_start();
+            let end = trimmed.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')?;
+            return trimmed[..end].parse().ok();
+        }
+        count += 1;
+    }
+}
+
+/// Post-process a sfsym SVG:
+/// 1. Replace hardcoded black fills with `currentColor` so the icon inherits
+///    its color from the CSS `color` property.
+/// 2. Strip the baked-in `width`/`height` attributes so CSS controls size.
+/// 3. Rewrite `viewBox` to a tight square crop around the glyph's alignment
+///    rect, normalizing optical size across symbols with different aspect ratios.
 ///
-/// **Dimensions:** sfsym bakes `width="N" height="N"` as presentational
-/// attributes on the `<svg>` element. In WebKit, presentational attributes
-/// have the same specificity as author styles, so they compete with CSS rules
-/// and can win unexpectedly when the displayed size differs from the canvas
-/// size. Removing them leaves only the `viewBox`, which scales correctly to
-/// whatever `width`/`height` CSS applies from the outside.
-fn apply_svg_currentcolor(path: &Path) {
+/// Step 3 is the key one: sfsym always produces a square canvas, but symbols
+/// like `book` are naturally wide and short, so their glyph only fills a
+/// fraction of the canvas height. The tight viewBox makes every symbol appear
+/// at consistent visual weight when displayed at the same CSS size.
+fn apply_svg_postprocess(path: &Path, spec: &SymbolSpec, info: Option<&SymbolInfo>) {
     let svg = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read SVG {}: {e}", path.display()));
 
-    // Replace hardcoded black fills/strokes with currentColor.
-    // sfsym outputs #000000 for --color '#000000'. Handle both quote styles and
-    // the 3-digit shorthand, and replace both fill and stroke attributes.
+    // Step 1: currentColor.
     let updated = svg
         .replace("fill=\"#000000\"", "fill=\"currentColor\"")
         .replace("fill=\"#000\"", "fill=\"currentColor\"")
@@ -301,37 +362,66 @@ fn apply_svg_currentcolor(path: &Path) {
         .replace("stroke='#000000'", "stroke='currentColor'")
         .replace("stroke='#000'", "stroke='currentColor'");
 
-    // Strip width/height attributes from the <svg> opening tag.
-    // sfsym always writes them as integers directly after the viewBox, e.g.:
-    //   <svg ... viewBox="0 0 20 20" width="20" height="20">
-    // We remove them so CSS has uncontested control over the rendered size.
-    // The replacement walks the string once, removing ` width="N"` and
-    // ` height="N"` tokens where N is one or more digits.
-    let updated = strip_svg_dimensions(&updated);
+    // Steps 2 + 3: rewrite the <svg> opening tag.
+    let updated = rewrite_svg_tag(&updated, spec, info);
 
     std::fs::write(path, updated)
         .unwrap_or_else(|e| panic!("failed to write SVG {}: {e}", path.display()));
 }
 
-/// Remove ` width="N"` and ` height="N"` attribute tokens from an SVG string.
+/// Rewrite the opening `<svg ...>` tag: strip `width`/`height` and set a
+/// normalized `viewBox` derived from the glyph's alignment rect.
 ///
-/// Only touches the first `<svg` tag (the root element); inner elements are
-/// left untouched. Uses a simple scan rather than a regex to avoid pulling in
-/// an extra dependency.
-fn strip_svg_dimensions(svg: &str) -> String {
-    // Find the extent of the opening <svg ...> tag.
+/// If `info` is `None` (sfsym info failed), falls back to just stripping the
+/// dimension attributes and leaving the original viewBox intact.
+fn rewrite_svg_tag(svg: &str, spec: &SymbolSpec, info: Option<&SymbolInfo>) -> String {
     let tag_end = svg.find('>').unwrap_or(svg.len());
-    let (tag, rest) = svg.split_at(tag_end);
+    let rest = &svg[tag_end..];
 
-    // Walk through the tag removing ` width="…"` and ` height="…"` tokens.
+    // Build the new viewBox value from alignment rect geometry.
+    let viewbox = info.map(|info| {
+        let canvas = f64::from(spec.size);
+
+        // sfsym scales the symbol to fit the square canvas, preserving aspect
+        // ratio and centering it. Reproduce that transform to get the
+        // alignmentRect in canvas coordinate space.
+        let scale = (canvas / info.natural_width).min(canvas / info.natural_height);
+        let rendered_w = info.natural_width * scale;
+        let rendered_h = info.natural_height * scale;
+        let off_x = (canvas - rendered_w) / 2.0;
+        let off_y = (canvas - rendered_h) / 2.0;
+
+        let ar_x = off_x + info.align_x * scale;
+        let ar_y = off_y + info.align_y * scale;
+        let ar_w = info.align_w * scale;
+        let ar_h = info.align_h * scale;
+
+        // Expand to a square centered on the alignment rect, then add padding.
+        let cx = ar_x + ar_w / 2.0;
+        let cy = ar_y + ar_h / 2.0;
+        let half = f64::max(ar_w, ar_h) / 2.0;
+        let pad = f64::from(spec.padding) * canvas;
+
+        let vx = cx - half - pad;
+        let vy = cy - half - pad;
+        let vsize = (half + pad) * 2.0;
+
+        format!("{vx:.4} {vy:.4} {vsize:.4} {vsize:.4}")
+    });
+
+    // Reconstruct the tag: copy everything except width/height/viewBox attrs.
+    let tag = &svg[..tag_end];
     let mut out = String::with_capacity(svg.len());
     let mut remaining = tag;
+
     while !remaining.is_empty() {
-        // Look for the next dimension attribute (space-prefixed, quoted integer).
-        let found = [" width=\"", " height=\""]
+        // Find the next attribute we want to drop or replace.
+        let next = [" width=\"", " height=\"", " viewBox=\""]
             .iter()
-            .find_map(|prefix| remaining.find(prefix).map(|pos| (pos, *prefix)));
-        match found {
+            .filter_map(|prefix| remaining.find(prefix).map(|pos| (pos, *prefix)))
+            .min_by_key(|(pos, _)| *pos);
+
+        match next {
             None => {
                 out.push_str(remaining);
                 break;
@@ -339,13 +429,27 @@ fn strip_svg_dimensions(svg: &str) -> String {
             Some((pos, prefix)) => {
                 out.push_str(&remaining[..pos]);
                 remaining = &remaining[pos + prefix.len()..];
-                // Skip past the closing quote.
+                // For viewBox: capture the original value before advancing,
+                // so the fallback can re-emit it if sfsym info wasn't available.
+                let original_viewbox = if prefix == " viewBox=\"" {
+                    remaining.split('"').next().map(str::to_string)
+                } else {
+                    None
+                };
+                // Skip past the closing quote of this attribute's value.
                 if let Some(close) = remaining.find('"') {
                     remaining = &remaining[close + 1..];
+                }
+                // Re-inject viewBox with our computed (or original) value.
+                // width and height are silently dropped.
+                if prefix == " viewBox=\"" {
+                    let vb = viewbox.as_deref().or(original_viewbox.as_deref()).unwrap_or("");
+                    write!(out, " viewBox=\"{vb}\"").unwrap();
                 }
             }
         }
     }
+
     out.push_str(rest);
     out
 }
@@ -405,8 +509,8 @@ fn build_generated_source(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
 
         writeln!(src, "    pub fn {method}() -> ::polysym::SfImage {{").unwrap();
         writeln!(src, "        ::polysym::SfImage::new(").unwrap();
-        writeln!(src, "            include_bytes!({light_path:?}),").unwrap();
-        writeln!(src, "            include_bytes!({dark_path:?}),").unwrap();
+        writeln!(src, "            include_bytes!({:?}),", light_path.display()).unwrap();
+        writeln!(src, "            include_bytes!({:?}),", dark_path.display()).unwrap();
         writeln!(src, "        )").unwrap();
         writeln!(src, "    }}\n").unwrap();
 
@@ -417,7 +521,7 @@ fn build_generated_source(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
         )
         .unwrap();
         writeln!(src, "    pub fn {method}_svg() -> &'static str {{").unwrap();
-        writeln!(src, "        include_str!({svg_path:?})").unwrap();
+        writeln!(src, "        include_str!({:?})", svg_path.display()).unwrap();
         writeln!(src, "    }}\n").unwrap();
     }
 
