@@ -1,0 +1,17 @@
+[package]
+name = "polysym"
+description = "Runtime support for SF Symbol icons in Tauri menus"
+readme = "README.md"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tauri = { workspace = true, features = ["image-png"] }
+
+[lints]
+workspace = true

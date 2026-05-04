@@ -5,6 +5,8 @@ members = [
     "crates/polybase",
     "crates/tauri-plugin-polybase",
     "crates/polybase-sqlite",
+    "crates/polysym",
+    "crates/polysym-build",
 ]
 
 [workspace.package]
@@ -19,6 +21,8 @@ repository = "https://github.com/dannystewart/polykit-rust"
 polylog = { version = "0.2.0", path = "crates/polylog" }
 polybase = { version = "0.2.0", path = "crates/polybase", default-features = false }
 polybase-sqlite = { version = "0.2.0", path = "crates/polybase-sqlite" }
+polysym = { version = "0.2.0", path = "crates/polysym" }
+polysym-build = { version = "0.2.0", path = "crates/polysym-build" }
 
 aes-gcm = "0.10.3"
 async-trait = "0.1"
