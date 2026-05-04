@@ -272,15 +272,23 @@ fn build_svg_batch_input(specs: &[SymbolSpec], symbol_dir: &Path) -> String {
     batch
 }
 
-/// Replace the hardcoded black fill/stroke in a sfsym SVG with `currentColor`.
+/// Post-process a sfsym SVG: replace hardcoded black fills with `currentColor`
+/// and strip the baked-in `width`/`height` attributes from the `<svg>` tag.
 ///
-/// This makes the SVG inherit its color from the CSS `color` property of its
-/// container, so dark mode, tinting, and hover states all work with pure CSS —
-/// no light/dark variants needed.
+/// **Color:** Makes the icon inherit color from the CSS `color` property so
+/// dark mode, tinting, and hover states all work with pure CSS.
+///
+/// **Dimensions:** sfsym bakes `width="N" height="N"` as presentational
+/// attributes on the `<svg>` element. In WebKit, presentational attributes
+/// have the same specificity as author styles, so they compete with CSS rules
+/// and can win unexpectedly when the displayed size differs from the canvas
+/// size. Removing them leaves only the `viewBox`, which scales correctly to
+/// whatever `width`/`height` CSS applies from the outside.
 fn apply_svg_currentcolor(path: &Path) {
     let svg = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("failed to read SVG {}: {e}", path.display()));
 
+    // Replace hardcoded black fills/strokes with currentColor.
     // sfsym outputs #000000 for --color '#000000'. Handle both quote styles and
     // the 3-digit shorthand, and replace both fill and stroke attributes.
     let updated = svg
@@ -293,8 +301,53 @@ fn apply_svg_currentcolor(path: &Path) {
         .replace("stroke='#000000'", "stroke='currentColor'")
         .replace("stroke='#000'", "stroke='currentColor'");
 
+    // Strip width/height attributes from the <svg> opening tag.
+    // sfsym always writes them as integers directly after the viewBox, e.g.:
+    //   <svg ... viewBox="0 0 20 20" width="20" height="20">
+    // We remove them so CSS has uncontested control over the rendered size.
+    // The replacement walks the string once, removing ` width="N"` and
+    // ` height="N"` tokens where N is one or more digits.
+    let updated = strip_svg_dimensions(&updated);
+
     std::fs::write(path, updated)
         .unwrap_or_else(|e| panic!("failed to write SVG {}: {e}", path.display()));
+}
+
+/// Remove ` width="N"` and ` height="N"` attribute tokens from an SVG string.
+///
+/// Only touches the first `<svg` tag (the root element); inner elements are
+/// left untouched. Uses a simple scan rather than a regex to avoid pulling in
+/// an extra dependency.
+fn strip_svg_dimensions(svg: &str) -> String {
+    // Find the extent of the opening <svg ...> tag.
+    let tag_end = svg.find('>').unwrap_or(svg.len());
+    let (tag, rest) = svg.split_at(tag_end);
+
+    // Walk through the tag removing ` width="…"` and ` height="…"` tokens.
+    let mut out = String::with_capacity(svg.len());
+    let mut remaining = tag;
+    while !remaining.is_empty() {
+        // Look for the next dimension attribute (space-prefixed, quoted integer).
+        let found = [" width=\"", " height=\""]
+            .iter()
+            .find_map(|prefix| remaining.find(prefix).map(|pos| (pos, *prefix)));
+        match found {
+            None => {
+                out.push_str(remaining);
+                break;
+            }
+            Some((pos, prefix)) => {
+                out.push_str(&remaining[..pos]);
+                remaining = &remaining[pos + prefix.len()..];
+                // Skip past the closing quote.
+                if let Some(close) = remaining.find('"') {
+                    remaining = &remaining[close + 1..];
+                }
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Run `sfsym batch` with the given stdin input, panicking on failure.
