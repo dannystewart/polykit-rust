@@ -4,6 +4,10 @@
 //! sync coordinator dispatches here. Edge-routed entities go through [`crate::edge::EdgeClient`]
 //! instead. Both paths share the [`crate::sync::EchoTracker`] so realtime echoes are suppressed
 //! identically.
+//!
+//! This module also exposes [`is_permanent_push_error_message`], the canonical "should this
+//! drop from the offline queue or be retried" classifier, ported verbatim from Swift PolyBase's
+//! `polybaseIsPermanentOfflineQueueError` (see `polykit-swift/PolyBase/Sync/SyncCoordinator.swift`).
 
 use serde_json::{Map, Value};
 
@@ -72,16 +76,12 @@ impl Pusher {
                 table: table.into(),
             }));
         }
-        if status.is_server_error() {
-            return Err(PolyError::Push(PushError::Transient {
-                table: table.into(),
-                message: format!("HTTP {}: {body}", status.as_u16()),
-            }));
-        }
-        Err(PolyError::Push(PushError::Permanent {
-            table: table.into(),
-            message: format!("HTTP {}: {body}", status.as_u16()),
-        }))
+        // Classify by message body, not status code. Swift PolyBase has shown that 5xx responses
+        // can carry permanent rejections (e.g. constraint violations surfaced as 500s by triggers)
+        // and 4xx responses can be transient (rate limits, transient PostgREST hiccups). The
+        // canonical pattern list is the source of truth.
+        let message = format!("HTTP {}: {body}", status.as_u16());
+        Err(PolyError::Push(classify_push_error_message(table, &message)))
     }
 
     /// Tombstone update: PATCH only `version`, `deleted`, `updated_at`. Avoids re-writing
@@ -118,16 +118,8 @@ impl Pusher {
             return Ok(());
         }
         let body_text = resp.text().await.unwrap_or_default();
-        if status.is_server_error() {
-            return Err(PolyError::Push(PushError::Transient {
-                table: table.into(),
-                message: format!("HTTP {}: {body_text}", status.as_u16()),
-            }));
-        }
-        Err(PolyError::Push(PushError::Permanent {
-            table: table.into(),
-            message: format!("HTTP {}: {body_text}", status.as_u16()),
-        }))
+        let message = format!("HTTP {}: {body_text}", status.as_u16());
+        Err(PolyError::Push(classify_push_error_message(table, &message)))
     }
 
     #[allow(dead_code)]
@@ -136,26 +128,78 @@ impl Pusher {
     }
 }
 
-/// Classify a free-form error message into a [`PushError`] for callers that catch lower-level
-/// errors and need to decide whether to enqueue for retry. Mirrors the heuristic from Swift
-/// PolyBase's `polybaseIsPermanentOfflineQueueError`.
-#[allow(dead_code)]
-pub(crate) fn classify_push_error_message(table: &str, message: &str) -> PushError {
+/// Patterns that mean a push rejection is permanent and the offline queue should drop the
+/// operation rather than retry it. Lifted verbatim from Swift PolyBase's
+/// `polybaseIsPermanentOfflineQueueError` (see `polykit-swift/PolyBase/Sync/SyncCoordinator.swift`).
+///
+/// Notably absent: `violates foreign key constraint`. A FK violation usually means the parent row
+/// is en route via realtime/pull and a retry will succeed once the parent lands. Treating it as
+/// permanent would drop legitimate writes during catch-up; Swift's lesson here is "let it retry".
+const PERMANENT_PUSH_ERROR_PATTERNS: &[&str] = &[
+    "version regression",
+    "is immutable",
+    "same-version mutation",
+    "undelete requires version",
+    "string is too long for tsvector",
+    "value too long",
+    "violates check constraint",
+    "violates not-null constraint",
+    "violates unique constraint",
+    "invalid input syntax",
+];
+
+/// True when the (case-insensitive) message body contains any of the known permanent-rejection
+/// patterns. Use this from any push path — Edge functions, PostgREST upserts, custom executors —
+/// to decide whether a remote rejection should drop the operation from the offline queue or be
+/// retried.
+///
+/// The patterns are the canonical battle-tested list from Swift PolyBase. Any new pattern added
+/// here must be backed by real production evidence (server-side trigger message, Postgres error
+/// class, etc.) — speculative additions will silently drop legitimate writes.
+pub fn is_permanent_push_error_message(message: &str) -> bool {
     let lower = message.to_ascii_lowercase();
-    if lower.contains("undelete requires version")
-        || lower.contains("invalid input syntax for type uuid")
-        || lower.contains("violates foreign key constraint")
-        || lower.contains("violates check constraint")
-        || lower.contains("version regression")
-    {
-        return PushError::Permanent { table: table.into(), message: message.into() };
+    PERMANENT_PUSH_ERROR_PATTERNS.iter().any(|pattern| lower.contains(pattern))
+}
+
+/// Classify a free-form error message into a [`PushError`]. Convenience wrapper around
+/// [`is_permanent_push_error_message`] for call sites that already need a typed error.
+pub(crate) fn classify_push_error_message(table: &str, message: &str) -> PushError {
+    if is_permanent_push_error_message(message) {
+        PushError::Permanent { table: table.into(), message: message.into() }
+    } else {
+        PushError::Transient { table: table.into(), message: message.into() }
     }
-    PushError::Transient { table: table.into(), message: message.into() }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn classifier_matches_swift_polybase_list() {
+        for pattern in PERMANENT_PUSH_ERROR_PATTERNS {
+            assert!(
+                is_permanent_push_error_message(pattern),
+                "expected pattern to match itself: {pattern}",
+            );
+        }
+    }
+
+    #[test]
+    fn classifier_is_case_insensitive() {
+        assert!(is_permanent_push_error_message("ERROR: VERSION REGRESSION detected"));
+        assert!(is_permanent_push_error_message("Field IS IMMUTABLE for personas/123"));
+    }
+
+    #[test]
+    fn fk_violations_are_intentionally_transient() {
+        // Swift PolyBase deliberately omits FK violations from the permanent list — parent rows
+        // arrive via realtime/pull during catch-up and a retry will succeed. The Rust port had a
+        // regression that classified FK as permanent; this test pins the Swift behavior.
+        assert!(!is_permanent_push_error_message(
+            "insert or update on table \"messages\" violates foreign key constraint",
+        ));
+    }
 
     #[test]
     fn classify_uuid_error_is_permanent() {
@@ -179,5 +223,21 @@ mod tests {
             classify_push_error_message("t", "undelete requires version >= 1005"),
             PushError::Permanent { .. }
         ));
+    }
+
+    #[test]
+    fn classify_constraint_violations_are_permanent() {
+        for body in [
+            "value too long for type character varying(255)",
+            "duplicate key violates unique constraint \"messages_pkey\"",
+            "null value in column \"id\" violates not-null constraint",
+            "string is too long for tsvector",
+            "new row for relation \"messages\" violates check constraint \"role_check\"",
+        ] {
+            assert!(
+                is_permanent_push_error_message(body),
+                "expected permanent classification for: {body}",
+            );
+        }
     }
 }

@@ -19,8 +19,12 @@ through PostgREST. Some things genuinely belong on the server.
 
 | Module | Purpose | Read first if... |
 |--------|---------|------------------|
-| [`registry`](src/registry/mod.rs) | Entity registration, field maps, write-path policy. | Adding a new synced entity. |
+| [`registry`](src/registry/mod.rs) | Entity registration, field maps, write-path policy, schema introspection. | Adding a new synced entity. |
 | [`sync::coordinator`](src/sync/coordinator.rs) | Single dispatcher for persist / delete. | Anything to do with how a row gets written. |
+| [`sync::reducer`](src/sync/reducer.rs) | Pure state machine for sync scheduling decisions (port of Swift `Sync/Core.swift`). | Building a custom sync runtime. |
+| [`sync::remote`](src/sync/remote.rs) | `RemoteWriter` / `RemoteReader` traits + Supabase live impls + memory test impls. | Wiring custom backends or tests. |
+| [`sync::push`](src/sync/push.rs) | PostgREST upsert/tombstone + `is_permanent_push_error_message` (Swift's 10-pattern classifier). | Deciding "retry or drop" on push errors. |
+| [`sync::echo`](src/sync/echo.rs) | `EchoTracker` for echo-then-push self-write suppression. | Sharing echo state between writers and realtime. |
 | [`kvs`](src/kvs.rs) | Typed key-value rows on the `kvs` table. | Cross-device preferences. |
 | [`auth`](src/auth.rs) | JWT session management, refresh loop, user-changed hook. | Sign-in / sign-out / account switch. |
 | [`encryption`](src/encryption.rs) | AES-256-GCM with HKDF-SHA256, wire-compatible with PolyBase Swift. | Field-level encryption. |
