@@ -74,7 +74,7 @@ All commands live under `plugin:polybase|<name>` and all events under `polybase:
 | `encrypt` / `decrypt` | Encrypt / decrypt a single string with the configured secret for the active user. |
 | `encrypt_batch` / `decrypt_batch` | Same, but over an array — one IPC round-trip per page of rows. `decrypt_batch` returns `Vec<Option<String>>` so a single corrupt row doesn't fail the whole batch. |
 | `kvs_get` / `kvs_set` / `kvs_delete` | Typed key-value operations on the `kvs` table. |
-| `storage_upload` / `storage_download` / `storage_delete` / `storage_list` / `storage_signed_url` | Supabase Storage adapter. |
+| `storage_upload` / `storage_download` / `storage_delete` / `storage_list` / `storage_signed_url` | Supabase Storage adapter. When polybase is configured with an encryption secret, `storage_upload` auto-encrypts plaintext bytes and `storage_download` auto-decrypts payloads carrying the `ENC\0` magic header. Plaintext objects (legacy or public assets) pass through download unchanged. |
 
 ### Events
 

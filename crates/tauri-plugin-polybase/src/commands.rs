@@ -412,10 +412,10 @@ pub async fn storage_upload(
     args: StorageUploadArgs,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
-    let (client, sessions) = require_client_and_session(&state).await?;
+    let (client, sessions, encryption) = require_client_session_and_encryption(&state).await?;
     let session = sessions.current().await.ok_or_else(|| "no active session".to_string())?;
     let bucket_name = client.config().storage_bucket_or_default().to_string();
-    let bucket = Bucket::new(client, bucket_name);
+    let bucket = bucket_with_optional_encryption(client, bucket_name, encryption, &session.user_id);
     bucket
         .upload(
             &args.path,
@@ -429,15 +429,19 @@ pub async fn storage_upload(
 }
 
 /// `storage_download` — fetch bytes from the configured bucket.
+///
+/// If polybase has an encryption secret configured, payloads carrying the `ENC\0` magic
+/// header are transparently decrypted before being returned. Plaintext objects (legacy or
+/// public assets) pass through unchanged.
 #[tauri::command]
 pub async fn storage_download(
     path: String,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<Vec<u8>, String> {
-    let (client, sessions) = require_client_and_session(&state).await?;
+    let (client, sessions, encryption) = require_client_session_and_encryption(&state).await?;
     let session = sessions.current().await.ok_or_else(|| "no active session".to_string())?;
     let bucket_name = client.config().storage_bucket_or_default().to_string();
-    let bucket = Bucket::new(client, bucket_name);
+    let bucket = bucket_with_optional_encryption(client, bucket_name, encryption, &session.user_id);
     let bytes = bucket.download(&path, &session.access_token).await.map_err(to_command_error)?;
     Ok(bytes.to_vec())
 }
@@ -517,4 +521,33 @@ async fn require_client_and_session(
     let client = guard.client.clone().ok_or_else(|| "polybase not configured".to_string())?;
     let sessions = guard.sessions.clone().ok_or_else(|| "polybase not configured".to_string())?;
     Ok((client, sessions))
+}
+
+/// Same as [`require_client_and_session`] plus the optional [`Encryption`] engine. Returned
+/// `Option<Encryption>` is `None` when the host hasn't configured an encryption secret —
+/// in that case storage round-trips stay raw, which is the correct behavior for public
+/// buckets.
+async fn require_client_session_and_encryption(
+    state: &tauri::State<'_, RuntimeHandle>,
+) -> Result<(Client, SessionStore, Option<Encryption>), String> {
+    let guard = state.inner.read().await;
+    let client = guard.client.clone().ok_or_else(|| "polybase not configured".to_string())?;
+    let sessions = guard.sessions.clone().ok_or_else(|| "polybase not configured".to_string())?;
+    let encryption = guard.encryption.clone();
+    Ok((client, sessions, encryption))
+}
+
+/// Build a [`Bucket`] with the supplied encryption engine attached when one is available.
+/// Without encryption the bucket round-trips raw bytes (legacy behavior).
+fn bucket_with_optional_encryption(
+    client: Client,
+    bucket_name: String,
+    encryption: Option<Encryption>,
+    user_id: &str,
+) -> Bucket {
+    let bucket = Bucket::new(client, bucket_name);
+    match encryption {
+        Some(enc) => bucket.with_encryption(enc, Encryption::key_user_uuid(user_id)),
+        None => bucket,
+    }
 }

@@ -7,8 +7,10 @@
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use uuid::Uuid;
 
 use crate::client::Client;
+use crate::encryption::Encryption;
 use crate::errors::{PolyError, StorageError};
 
 /// Single entry returned by [`Bucket::list`] (mirrors Supabase Storage `objects` row).
@@ -79,16 +81,44 @@ pub struct SignedUrl {
 }
 
 /// Adapter for one Supabase Storage bucket.
+///
+/// Optionally carries an [`Encryption`] engine bound to a specific user (via
+/// [`Bucket::with_encryption`]). When set, [`Bucket::upload`] auto-encrypts plaintext bytes
+/// before sending them to Supabase Storage, and [`Bucket::download`] auto-decrypts any
+/// payload that carries the [`crate::contract::BINARY_ENCRYPTION_HEADER`] (`ENC\0`) magic
+/// header. Plaintext-on-disk objects (legacy, or bytes uploaded by a non-encrypted client)
+/// pass through download untouched.
+///
+/// Without an attached encryption engine, both directions act as raw byte passthroughs —
+/// the historical behavior. This is the right mode for public assets (e.g. avatars in a
+/// public bucket) where encryption is intentionally not desired.
 #[derive(Debug, Clone)]
 pub struct Bucket {
     client: Client,
     bucket: String,
+    encryption: Option<(Encryption, Uuid)>,
 }
 
 impl Bucket {
-    /// Build an adapter for the named bucket on the given client.
+    /// Build an adapter for the named bucket on the given client. No encryption is attached
+    /// by default; call [`Bucket::with_encryption`] to make upload/download transparent over
+    /// the wire encryption format.
     pub fn new(client: Client, bucket: impl Into<String>) -> Self {
-        Self { client, bucket: bucket.into() }
+        Self { client, bucket: bucket.into(), encryption: None }
+    }
+
+    /// Attach an encryption engine + user id to make upload/download transparent. With this
+    /// set:
+    ///
+    /// - [`Bucket::upload`] encrypts plaintext bytes before POST (single-encrypts; re-uploading
+    ///   already-encrypted bytes will double-encrypt — callers handing us raw bytes are
+    ///   expected to give us plaintext).
+    /// - [`Bucket::download`] decrypts payloads that begin with [`BINARY_ENCRYPTION_HEADER`].
+    ///   Payloads without the header are returned unchanged (handles legacy plaintext objects
+    ///   gracefully).
+    pub fn with_encryption(mut self, encryption: Encryption, user_id: Uuid) -> Self {
+        self.encryption = Some((encryption, user_id));
+        self
     }
 
     /// The bucket name.
@@ -96,8 +126,16 @@ impl Bucket {
         &self.bucket
     }
 
-    /// Upload bytes to a path within this bucket. `upsert = true` mirrors Tauri Prism's behavior
+    /// True when this bucket has an encryption engine attached.
+    pub fn is_encrypted(&self) -> bool {
+        self.encryption.is_some()
+    }
+
+    /// Upload bytes to a path within this bucket. `upsert = true` mirrors Prism's behavior
     /// of allowing reuploads; pass `false` to fail on conflict.
+    ///
+    /// If [`Bucket::with_encryption`] was called, the bytes are encrypted before upload.
+    /// Otherwise they are sent raw.
     pub async fn upload(
         &self,
         path: &str,
@@ -106,6 +144,7 @@ impl Bucket {
         access_token: &str,
         upsert: bool,
     ) -> Result<(), PolyError> {
+        let body = self.maybe_encrypt(path, bytes)?;
         let url = self.client.storage_object_url(&self.bucket, path);
         let resp = self
             .client
@@ -115,7 +154,7 @@ impl Bucket {
             .header("Authorization", format!("Bearer {access_token}"))
             .header("Content-Type", content_type)
             .header("x-upsert", if upsert { "true" } else { "false" })
-            .body(bytes)
+            .body(body)
             .send()
             .await?;
         let status = resp.status();
@@ -131,6 +170,11 @@ impl Bucket {
     }
 
     /// Download bytes from a path. Returns `StorageError::NotFound` for HTTP 404.
+    ///
+    /// If [`Bucket::with_encryption`] was called and the payload starts with
+    /// [`BINARY_ENCRYPTION_HEADER`] (`ENC\0`), the bytes are decrypted before being returned.
+    /// Payloads without the header (and downloads with no encryption attached) are returned
+    /// unchanged.
     pub async fn download(&self, path: &str, access_token: &str) -> Result<Bytes, PolyError> {
         let url = self.client.storage_object_url(&self.bucket, path);
         let resp = self
@@ -157,7 +201,42 @@ impl Bucket {
             }));
         }
         let bytes = resp.bytes().await?;
-        Ok(bytes)
+        self.maybe_decrypt(path, bytes)
+    }
+
+    /// Encrypt `bytes` if an encryption engine is attached; otherwise pass through unchanged.
+    fn maybe_encrypt(&self, path: &str, bytes: Bytes) -> Result<Bytes, PolyError> {
+        let Some((enc, user)) = &self.encryption else {
+            return Ok(bytes);
+        };
+        let ciphertext = enc.encrypt_data(&bytes, *user).map_err(|e| {
+            PolyError::Storage(StorageError::Failed {
+                bucket: self.bucket.clone(),
+                path: path.into(),
+                message: format!("encrypt: {e}"),
+            })
+        })?;
+        Ok(Bytes::from(ciphertext))
+    }
+
+    /// Decrypt `bytes` if an encryption engine is attached AND the payload carries the
+    /// `ENC\0` magic header. Otherwise pass through unchanged so legacy plaintext objects
+    /// and non-encrypted buckets keep working.
+    fn maybe_decrypt(&self, path: &str, bytes: Bytes) -> Result<Bytes, PolyError> {
+        let Some((enc, user)) = &self.encryption else {
+            return Ok(bytes);
+        };
+        if !enc.is_data_encrypted(&bytes) {
+            return Ok(bytes);
+        }
+        let plaintext = enc.decrypt_data(&bytes, *user).map_err(|e| {
+            PolyError::Storage(StorageError::Failed {
+                bucket: self.bucket.clone(),
+                path: path.into(),
+                message: format!("decrypt: {e}"),
+            })
+        })?;
+        Ok(Bytes::from(plaintext))
     }
 
     /// Delete a single object.
@@ -281,5 +360,101 @@ impl Bucket {
         // Storage returns a relative path; resolve against the project base URL.
         let relative = signed.url.trim_start_matches('/');
         Ok(format!("{base}/storage/v1/{relative}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! These tests exercise the encrypt-on-upload / decrypt-on-download transformations
+    //! that [`Bucket::maybe_encrypt`] and [`Bucket::maybe_decrypt`] perform locally. The
+    //! HTTP path itself is exercised end-to-end by the host app's smoke tests against a
+    //! real Supabase project.
+    use super::*;
+    use crate::client::{Client, ClientConfig};
+
+    fn client() -> Client {
+        Client::new(ClientConfig {
+            supabase_url: "https://example.supabase.co".into(),
+            supabase_anon_key: "anon".into(),
+            encryption_secret: None,
+            storage_bucket: Some("test-bucket".into()),
+        })
+        .expect("client")
+    }
+
+    fn user() -> Uuid {
+        Encryption::key_user_uuid("11111111-2222-3333-4444-555555555555")
+    }
+
+    fn enc() -> Encryption {
+        Encryption::new("test-secret-1234").expect("enc")
+    }
+
+    #[test]
+    fn upload_passthrough_when_no_encryption() {
+        let bucket = Bucket::new(client(), "test-bucket");
+        let raw = Bytes::from_static(b"hello world");
+        let out = bucket.maybe_encrypt("a.bin", raw.clone()).expect("passthrough");
+        assert_eq!(out, raw, "no encryption attached → bytes unchanged");
+        assert!(!out.starts_with(b"ENC\0"));
+    }
+
+    #[test]
+    fn upload_encrypts_when_encryption_attached() {
+        let bucket = Bucket::new(client(), "test-bucket").with_encryption(enc(), user());
+        let raw = Bytes::from_static(b"plaintext attachment");
+        let cipher = bucket.maybe_encrypt("a.bin", raw.clone()).expect("encrypt");
+        assert!(cipher.starts_with(b"ENC\0"), "encrypted upload must carry ENC\\0 header");
+        assert_ne!(cipher, raw);
+    }
+
+    #[test]
+    fn download_passthrough_when_no_encryption() {
+        let bucket = Bucket::new(client(), "test-bucket");
+        let cipher = enc().encrypt_data(b"payload", user()).expect("encrypt");
+        let out = bucket.maybe_decrypt("a.bin", Bytes::from(cipher.clone())).expect("passthrough");
+        assert_eq!(out, Bytes::from(cipher), "no encryption attached → bytes unchanged");
+    }
+
+    #[test]
+    fn download_passthrough_when_payload_lacks_header() {
+        let bucket = Bucket::new(client(), "test-bucket").with_encryption(enc(), user());
+        let raw = Bytes::from_static(b"legacy plaintext object");
+        let out = bucket.maybe_decrypt("a.bin", raw.clone()).expect("passthrough");
+        assert_eq!(out, raw, "no ENC\\0 header → bytes unchanged");
+    }
+
+    #[test]
+    fn download_decrypts_when_payload_has_header() {
+        let bucket = Bucket::new(client(), "test-bucket").with_encryption(enc(), user());
+        let plain = b"plaintext attachment";
+        let cipher = enc().encrypt_data(plain, user()).expect("encrypt");
+        let out = bucket.maybe_decrypt("a.bin", Bytes::from(cipher)).expect("decrypt");
+        assert_eq!(&out[..], plain);
+    }
+
+    #[test]
+    fn round_trip_via_helpers() {
+        let bucket = Bucket::new(client(), "test-bucket").with_encryption(enc(), user());
+        let plain = Bytes::from_static(b"\x00\x01\x02 binary safe");
+        let cipher = bucket.maybe_encrypt("a.bin", plain.clone()).expect("encrypt");
+        assert!(cipher.starts_with(b"ENC\0"));
+        let back = bucket.maybe_decrypt("a.bin", cipher).expect("decrypt");
+        assert_eq!(back, plain, "encrypt-then-decrypt must round-trip exactly");
+    }
+
+    #[test]
+    fn download_decrypt_failure_surfaces_storage_error() {
+        // Bucket attached to a DIFFERENT user than the one that encrypted the bytes.
+        let other_user = Encryption::key_user_uuid("22222222-2222-3333-4444-555555555555");
+        let bucket = Bucket::new(client(), "test-bucket").with_encryption(enc(), other_user);
+        let cipher = enc().encrypt_data(b"payload", user()).expect("encrypt");
+        let err = bucket.maybe_decrypt("a.bin", Bytes::from(cipher)).expect_err("must fail");
+        match err {
+            PolyError::Storage(StorageError::Failed { message, .. }) => {
+                assert!(message.contains("decrypt"), "error should mention decrypt: {message}");
+            }
+            other => panic!("expected StorageError::Failed, got {other:?}"),
+        }
     }
 }
