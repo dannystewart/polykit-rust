@@ -232,6 +232,25 @@ pub enum RegistryError {
     /// Active user id was missing when constructing a write payload.
     #[error("write payload missing active user id on table {0}")]
     MissingUserId(String),
+
+    /// A registered factory function failed to deserialize a remote-shaped row. Distinct from
+    /// [`Self::TableNotRegistered`] / [`Self::TypeNotRegistered`] (which are lookup failures)
+    /// — this fires when the factory IS present but its body returned an error (typically a
+    /// `serde` deserialization issue or a `from_remote_map` validation failure).
+    #[error("factory failed for {table}: {message}")]
+    FactoryFailed {
+        /// Table name whose factory failed.
+        table: String,
+        /// Human-readable detail from the underlying deserializer or validator.
+        message: String,
+    },
+
+    /// Remote schema introspection (e.g. PostgREST OpenAPI) returned a payload that didn't
+    /// match the expected shape. Used by [`crate::registry::schema::SchemaSnapshot::from_openapi`]
+    /// when the JSON document is missing the `components.schemas` envelope or otherwise
+    /// malformed.
+    #[error("invalid remote schema: {0}")]
+    InvalidRemoteSchema(String),
 }
 
 /// Error class for Storage bucket operations.

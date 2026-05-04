@@ -155,7 +155,7 @@ impl Coordinator {
     pub async fn persist_change_with_op(
         &self,
         table: &str,
-        mut record: Map<String, Value>,
+        record: Map<String, Value>,
         op: Option<&str>,
     ) -> Result<(), PolyError> {
         let config =
@@ -174,16 +174,14 @@ impl Coordinator {
             .to_string();
         let session = self.inner.sessions.current().await.ok_or(PolyError::NoSession)?;
 
-        if config.include_user_id
-            && let Some(column) = config.user_id_column
-            && !record.contains_key(column)
-        {
-            record.insert(column.into(), Value::String(session.user_id.clone()));
-        }
-
-        if let Some(enc) = self.inner.encryption.as_ref() {
-            encrypt_record_columns(&config, &mut record, enc, &session.user_id)?;
-        }
+        // Single canonical preparation step: encrypt encrypted columns + inject user_id.
+        // Implementation lives on EntityConfig so callers running their own push path
+        // (e.g. Prism's SyncCoordinator) share the same logic.
+        let record = config.serialize_for_remote(
+            self.inner.encryption.as_ref(),
+            &session.user_id,
+            &record,
+        )?;
 
         let local_record = config.map_remote_to_local(&record);
         self.inner.local.upsert_record(table, local_record).await?;
@@ -426,28 +424,6 @@ fn now_micros() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_micros() as i64).unwrap_or_default()
 }
 
-fn encrypt_record_columns(
-    config: &EntityConfig,
-    record: &mut Map<String, Value>,
-    enc: &Encryption,
-    user_id: &str,
-) -> Result<(), PolyError> {
-    let user_uuid = Encryption::key_user_uuid(user_id);
-    for column in &config.columns {
-        if !column.encrypted {
-            continue;
-        }
-        let key = column.remote_name.unwrap_or(column.canonical_name);
-        if let Some(Value::String(text)) = record.get(key).cloned()
-            && !enc.is_encrypted(&text)
-        {
-            let cipher = enc.encrypt(&text, user_uuid)?;
-            record.insert(key.into(), Value::String(cipher));
-        }
-    }
-    Ok(())
-}
-
 fn decrypt_record_columns(
     config: &EntityConfig,
     record: &mut Map<String, Value>,
@@ -595,12 +571,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn encrypt_helper_only_touches_registered_encrypted_columns() {
+    async fn serialize_for_remote_only_touches_registered_encrypted_columns() {
         let (coord, _) = coordinator_with_encryption(Some("secret"));
         let config = coord.inner.registry.config_for_table("messages").unwrap();
         let enc = coord.inner.encryption.as_ref().unwrap();
 
-        let mut record = json!({
+        let record = json!({
             "id": "m1",
             "content": "hello world",
             "version": 1,
@@ -609,21 +585,22 @@ mod tests {
         .unwrap()
         .clone();
 
-        encrypt_record_columns(&config, &mut record, enc, "user-1").unwrap();
+        let serialized = config.serialize_for_remote(Some(enc), "user-1", &record).unwrap();
 
-        let content = record["content"].as_str().unwrap();
+        let content = serialized["content"].as_str().unwrap();
         assert!(content.starts_with("enc:"), "expected encrypted content, got {content}");
-        assert_eq!(record["id"].as_str().unwrap(), "m1");
-        assert_eq!(record["version"].as_i64().unwrap(), 1);
+        assert_eq!(serialized["id"].as_str().unwrap(), "m1");
+        assert_eq!(serialized["version"].as_i64().unwrap(), 1);
+        assert_eq!(serialized["user_id"].as_str().unwrap(), "user-1", "user_id is injected");
     }
 
     #[tokio::test]
-    async fn decrypt_helper_undoes_encrypt_helper() {
+    async fn decrypt_helper_undoes_serialize_for_remote() {
         let (coord, _) = coordinator_with_encryption(Some("secret"));
         let config = coord.inner.registry.config_for_table("messages").unwrap();
         let enc = coord.inner.encryption.as_ref().unwrap();
 
-        let mut record = json!({
+        let record = json!({
             "id": "m1",
             "content": "hello world",
             "version": 1,
@@ -632,20 +609,20 @@ mod tests {
         .unwrap()
         .clone();
 
-        encrypt_record_columns(&config, &mut record, enc, "user-1").unwrap();
-        decrypt_record_columns(&config, &mut record, enc, "user-1").unwrap();
-        assert_eq!(record["content"].as_str().unwrap(), "hello world");
+        let mut serialized = config.serialize_for_remote(Some(enc), "user-1", &record).unwrap();
+        decrypt_record_columns(&config, &mut serialized, enc, "user-1").unwrap();
+        assert_eq!(serialized["content"].as_str().unwrap(), "hello world");
     }
 
     #[tokio::test]
-    async fn encrypt_helper_skips_already_encrypted_values() {
+    async fn serialize_for_remote_skips_already_encrypted_values() {
         let (coord, _) = coordinator_with_encryption(Some("secret"));
         let config = coord.inner.registry.config_for_table("messages").unwrap();
         let enc = coord.inner.encryption.as_ref().unwrap();
 
         let user = "user-1";
         let pre_cipher = enc.encrypt("hello", Encryption::key_user_uuid(user)).unwrap();
-        let mut record = json!({
+        let record = json!({
             "id": "m1",
             "content": pre_cipher.clone(),
         })
@@ -653,8 +630,31 @@ mod tests {
         .unwrap()
         .clone();
 
-        encrypt_record_columns(&config, &mut record, enc, user).unwrap();
-        assert_eq!(record["content"].as_str().unwrap(), pre_cipher);
+        let serialized = config.serialize_for_remote(Some(enc), user, &record).unwrap();
+        assert_eq!(serialized["content"].as_str().unwrap(), pre_cipher);
+    }
+
+    #[tokio::test]
+    async fn serialize_for_remote_passes_through_when_encryption_absent() {
+        let (coord, _) = coordinator_with_encryption(None);
+        let config = coord.inner.registry.config_for_table("messages").unwrap();
+
+        let record = json!({
+            "id": "m1",
+            "content": "plaintext",
+            "version": 1,
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+
+        let serialized = config.serialize_for_remote(None, "user-1", &record).unwrap();
+        assert_eq!(
+            serialized["content"].as_str().unwrap(),
+            "plaintext",
+            "no encryption attached → encrypted columns pass through unchanged"
+        );
+        assert_eq!(serialized["user_id"].as_str().unwrap(), "user-1", "user_id still injected");
     }
 
     #[tokio::test]

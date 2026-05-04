@@ -54,7 +54,11 @@ use std::collections::HashMap;
 use parking_lot::RwLock;
 use serde_json::{Map, Value};
 
+use crate::encryption::Encryption;
 use crate::errors::RegistryError;
+
+pub mod schema;
+pub use schema::{ColumnShape, SchemaSnapshot, TableShape, normalize_type};
 
 /// Whether an entity is synced to Supabase or strictly local-only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,6 +342,84 @@ impl EntityConfig {
         }
         remote
     }
+
+    /// True when this entity has a factory registered (i.e. callers can use
+    /// [`Self::create_entity`] to deserialize remote-shaped rows).
+    pub fn has_factory(&self) -> bool {
+        self.factory.is_some()
+    }
+
+    /// Run the registered factory against a remote-shaped row, producing a typed JSON
+    /// entity. Returns [`RegistryError::FactoryFailed`] when no factory is registered, or
+    /// when the factory returns an error.
+    pub fn create_entity(&self, record: &Map<String, Value>) -> Result<Value, RegistryError> {
+        let factory = self.factory.ok_or_else(|| RegistryError::FactoryFailed {
+            table: self.table_name.into(),
+            message: "no factory registered".into(),
+        })?;
+        factory(record)
+    }
+
+    /// Prepare a remote-shaped payload for transport: encrypt every encrypted column (when
+    /// an [`Encryption`] is provided) AND inject the active user id when
+    /// [`Self::include_user_id`] is set. Returns the augmented payload as a fresh map.
+    ///
+    /// This is the single canonical way to prepare a remote-shaped payload for PostgREST
+    /// upserts, Edge Function bodies, or queued replays. The [`crate::sync::Coordinator`]
+    /// uses this internally; consumers running their own push path should use
+    /// [`crate::registry::Registry::serialize_remote_payload`] (which resolves the
+    /// [`EntityConfig`] for them by table name).
+    ///
+    /// Behavior:
+    /// - Columns that are not flagged `encrypted` pass through unchanged.
+    /// - When `encryption` is `None`, encrypted columns ALSO pass through unchanged. This
+    ///   is the right behavior for unit tests, lightweight apps without an encryption
+    ///   secret, or public-data buckets.
+    /// - When `encryption` is `Some`, encrypted-flagged string values are encrypted in
+    ///   place. Values already carrying the canonical `enc:` prefix are left as-is
+    ///   (idempotent over already-encrypted payloads). Non-string values are skipped.
+    /// - When [`Self::include_user_id`] is true and [`Self::user_id_column`] is set, the
+    ///   user id is inserted under that column name (overwriting any prior value to
+    ///   prevent a caller from accidentally pushing on behalf of a different user).
+    pub fn serialize_for_remote(
+        &self,
+        encryption: Option<&Encryption>,
+        user_id: &str,
+        payload: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, RegistryError> {
+        let mut serialized = payload.clone();
+
+        if let Some(enc) = encryption {
+            let user_uuid = Encryption::key_user_uuid(user_id);
+            for column in &self.columns {
+                if !column.encrypted {
+                    continue;
+                }
+                let key = column.effective_remote_name();
+                let Some(Value::String(current_value)) = serialized.get(key).cloned() else {
+                    continue;
+                };
+                if enc.is_encrypted(&current_value) {
+                    continue;
+                }
+                let encrypted = enc.encrypt(&current_value, user_uuid).map_err(|_| {
+                    RegistryError::EncryptionFailed {
+                        table: self.table_name.into(),
+                        column: column.canonical_name.into(),
+                    }
+                })?;
+                serialized.insert(key.into(), Value::String(encrypted));
+            }
+        }
+
+        if self.include_user_id
+            && let Some(user_id_column) = self.user_id_column
+        {
+            serialized.insert(user_id_column.into(), Value::String(user_id.to_string()));
+        }
+
+        Ok(serialized)
+    }
 }
 
 /// Registry of all entities for an app. Built once at startup, then read-only.
@@ -403,6 +485,143 @@ impl Registry {
     pub fn registered_types(&self) -> Vec<String> {
         self.inner.read().by_type.keys().cloned().collect()
     }
+
+    /// Encrypt encrypted-flagged columns (when an [`Encryption`] is provided) and inject
+    /// the active user id on a remote-shaped payload. Returns
+    /// [`RegistryError::TableNotRegistered`] when the table is unknown. Delegates to
+    /// [`EntityConfig::serialize_for_remote`] under the hood.
+    pub fn serialize_remote_payload(
+        &self,
+        table_name: &str,
+        payload: &Map<String, Value>,
+        encryption: Option<&Encryption>,
+        user_id: &str,
+    ) -> Result<Map<String, Value>, RegistryError> {
+        let config = self
+            .config_for_table(table_name)
+            .ok_or_else(|| RegistryError::TableNotRegistered(table_name.to_string()))?;
+        config.serialize_for_remote(encryption, user_id, payload)
+    }
+
+    /// Compare a [`SchemaSnapshot`] of the local SQLite mirror against registry expectations.
+    /// Returns a list of human-readable issue strings; empty means no drift.
+    ///
+    /// Validates EVERY registered table (synced AND local-only) against the snapshot using
+    /// each column's `local_name` + `sql_type`.
+    pub fn validate_local_schema_snapshot(&self, snapshot: &SchemaSnapshot) -> Vec<String> {
+        self.validate_schema(snapshot, SchemaLocation::Local)
+    }
+
+    /// Compare a [`SchemaSnapshot`] of the remote schema (e.g. parsed from PostgREST's
+    /// OpenAPI) against registry expectations. Returns a list of human-readable issue
+    /// strings; empty means no drift.
+    ///
+    /// Validates only synced tables, using each column's `remote_name` + `remote_type`,
+    /// plus an additional `user_id` column when [`EntityConfig::include_user_id`] is set.
+    pub fn validate_remote_schema_snapshot(&self, snapshot: &SchemaSnapshot) -> Vec<String> {
+        self.validate_schema(snapshot, SchemaLocation::Remote)
+    }
+
+    /// Derive a [`SchemaSnapshot`] of the EXPECTED remote shape from the registry's own
+    /// column definitions. Useful for self-consistency checks, golden-file tests, or
+    /// validating one app's expectations against another's snapshot.
+    pub fn build_remote_snapshot_from_registry(&self) -> SchemaSnapshot {
+        let inner = self.inner.read();
+        let tables = inner
+            .by_table
+            .values()
+            .filter(|config| config.is_synced())
+            .map(|config| {
+                let mut columns = config
+                    .columns
+                    .iter()
+                    .filter_map(|column| {
+                        Some(ColumnShape::new(
+                            column.remote_name?,
+                            column.remote_type.unwrap_or("unknown"),
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                if config.include_user_id
+                    && let Some(user_id_column) = config.user_id_column
+                {
+                    columns.push(ColumnShape::new(user_id_column, "string"));
+                }
+                (config.table_name.to_string(), TableShape::new(columns))
+            })
+            .collect();
+        SchemaSnapshot::new(tables)
+    }
+
+    fn validate_schema(&self, snapshot: &SchemaSnapshot, location: SchemaLocation) -> Vec<String> {
+        let inner = self.inner.read();
+        let mut issues = Vec::new();
+
+        let configs: Vec<&EntityConfig> = inner
+            .by_table
+            .values()
+            .filter(|config| match location {
+                SchemaLocation::Local => true,
+                SchemaLocation::Remote => config.is_synced(),
+            })
+            .collect();
+
+        for config in configs {
+            let Some(actual_table) = snapshot.tables.get(config.table_name) else {
+                issues.push(format!("missing table: {}", config.table_name));
+                continue;
+            };
+
+            let actual_columns = actual_table.column_map();
+            let expected_columns: Vec<(&str, &str)> = match location {
+                SchemaLocation::Local => config
+                    .columns
+                    .iter()
+                    .map(|column| (column.local_name, column.sql_type))
+                    .collect(),
+                SchemaLocation::Remote => {
+                    let mut columns: Vec<(&str, &str)> = config
+                        .columns
+                        .iter()
+                        .filter_map(|column| {
+                            Some((column.remote_name?, column.remote_type.unwrap_or("unknown")))
+                        })
+                        .collect();
+                    if config.include_user_id
+                        && let Some(user_id_column) = config.user_id_column
+                    {
+                        columns.push((user_id_column, "string"));
+                    }
+                    columns
+                }
+            };
+
+            for (column_name, expected_type) in expected_columns {
+                let Some(actual_type) = actual_columns.get(column_name) else {
+                    issues.push(format!(
+                        "table '{}' missing column: {}",
+                        config.table_name, column_name
+                    ));
+                    continue;
+                };
+
+                if normalize_type(expected_type) != normalize_type(actual_type) {
+                    issues.push(format!(
+                        "table '{}' column '{}' type mismatch: expected {}, found {}",
+                        config.table_name, column_name, expected_type, actual_type
+                    ));
+                }
+            }
+        }
+
+        issues
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SchemaLocation {
+    Local,
+    Remote,
 }
 
 #[cfg(test)]
@@ -502,5 +721,202 @@ mod tests {
         assert_eq!(remote["id"], serde_json::json!("c1"));
         assert!(remote.get("draft_text").is_none());
         assert_eq!(remote.len(), 1);
+    }
+
+    fn enc() -> Encryption {
+        Encryption::new("test-secret").unwrap()
+    }
+
+    #[test]
+    fn serialize_for_remote_injects_user_id_when_configured() {
+        let cfg = messages_config();
+        let payload = serde_json::json!({ "id": "m1", "version": 1 });
+        let serialized =
+            cfg.serialize_for_remote(None, "user-42", payload.as_object().unwrap()).unwrap();
+        assert_eq!(serialized["user_id"], serde_json::json!("user-42"));
+    }
+
+    #[test]
+    fn serialize_for_remote_overwrites_caller_supplied_user_id() {
+        let cfg = messages_config();
+        let payload = serde_json::json!({ "id": "m1", "user_id": "spoofed" });
+        let serialized =
+            cfg.serialize_for_remote(None, "real-user", payload.as_object().unwrap()).unwrap();
+        assert_eq!(
+            serialized["user_id"],
+            serde_json::json!("real-user"),
+            "active session id must win over caller-supplied value"
+        );
+    }
+
+    #[test]
+    fn serialize_for_remote_skips_user_id_when_not_configured() {
+        let cfg = EntityConfig::synced("public", "Public")
+            .columns([ColumnDef::synced("id", "id", "id", "TEXT", "string", false)])
+            .include_user_id(false);
+        let payload = serde_json::json!({ "id": "p1" });
+        let serialized =
+            cfg.serialize_for_remote(None, "user-1", payload.as_object().unwrap()).unwrap();
+        assert!(!serialized.contains_key("user_id"));
+    }
+
+    #[test]
+    fn serialize_for_remote_encrypts_only_flagged_columns() {
+        let cfg = messages_config();
+        let payload = serde_json::json!({
+            "id": "m1",
+            "content": "hello world",
+            "version": 7,
+        });
+        let serialized =
+            cfg.serialize_for_remote(Some(&enc()), "user-1", payload.as_object().unwrap()).unwrap();
+        assert!(serialized["content"].as_str().unwrap().starts_with("enc:"));
+        assert_eq!(serialized["id"], serde_json::json!("m1"));
+        assert_eq!(serialized["version"], serde_json::json!(7));
+    }
+
+    #[test]
+    fn serialize_for_remote_is_idempotent_over_already_encrypted() {
+        let cfg = messages_config();
+        let engine = enc();
+        let user = "user-1";
+        let pre = engine.encrypt("payload", Encryption::key_user_uuid(user)).unwrap();
+        let payload = serde_json::json!({ "id": "m1", "content": pre.clone() });
+        let serialized =
+            cfg.serialize_for_remote(Some(&engine), user, payload.as_object().unwrap()).unwrap();
+        assert_eq!(
+            serialized["content"],
+            serde_json::json!(pre),
+            "already-encrypted values are left untouched"
+        );
+    }
+
+    #[test]
+    fn serialize_for_remote_is_pass_through_without_encryption() {
+        let cfg = messages_config();
+        let payload = serde_json::json!({ "id": "m1", "content": "plain", "version": 1 });
+        let serialized =
+            cfg.serialize_for_remote(None, "user-1", payload.as_object().unwrap()).unwrap();
+        assert_eq!(serialized["content"], serde_json::json!("plain"));
+    }
+
+    #[test]
+    fn create_entity_returns_factory_failed_when_no_factory() {
+        let cfg = EntityConfig::synced("messages", "Message");
+        let payload = serde_json::Map::new();
+        let err = cfg.create_entity(&payload).expect_err("no factory");
+        match err {
+            RegistryError::FactoryFailed { table, .. } => assert_eq!(table, "messages"),
+            other => panic!("expected FactoryFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_entity_invokes_registered_factory() {
+        let cfg = EntityConfig::synced("messages", "Message")
+            .factory(|record| Ok(serde_json::Value::Object(record.clone())));
+        let mut payload = serde_json::Map::new();
+        payload.insert("id".into(), serde_json::Value::String("m1".into()));
+        let value = cfg.create_entity(&payload).unwrap();
+        assert_eq!(value["id"], serde_json::json!("m1"));
+    }
+
+    #[test]
+    fn registry_serialize_remote_payload_resolves_table() {
+        let reg = Registry::new();
+        reg.register(messages_config());
+        let payload = serde_json::json!({ "id": "m1", "content": "hi" });
+        let serialized = reg
+            .serialize_remote_payload(
+                "messages",
+                payload.as_object().unwrap(),
+                Some(&enc()),
+                "user-1",
+            )
+            .unwrap();
+        assert!(serialized["content"].as_str().unwrap().starts_with("enc:"));
+        assert_eq!(serialized["user_id"], serde_json::json!("user-1"));
+    }
+
+    #[test]
+    fn registry_serialize_remote_payload_rejects_unknown_table() {
+        let reg = Registry::new();
+        let err = reg
+            .serialize_remote_payload("ghosts", &serde_json::Map::new(), Some(&enc()), "user-1")
+            .expect_err("unknown table");
+        assert!(matches!(err, RegistryError::TableNotRegistered(t) if t == "ghosts"));
+    }
+
+    #[test]
+    fn build_remote_snapshot_from_registry_skips_local_only_tables() {
+        let reg = Registry::new();
+        reg.register(messages_config());
+        reg.register(
+            EntityConfig::local_only("drafts").columns([ColumnDef::local_only("id", "TEXT")]),
+        );
+        let snap = reg.build_remote_snapshot_from_registry();
+        assert!(snap.tables.contains_key("messages"));
+        assert!(!snap.tables.contains_key("drafts"));
+        assert!(snap.tables["messages"].column_map().contains_key("user_id"));
+    }
+
+    #[test]
+    fn validate_remote_schema_snapshot_reports_missing_table_and_column_drift() {
+        let reg = Registry::new();
+        reg.register(messages_config());
+
+        let mut tables = HashMap::new();
+        tables.insert(
+            "messages".to_string(),
+            TableShape::new(vec![
+                ColumnShape::new("id", "string"),
+                ColumnShape::new("content", "integer"), // wrong type
+                ColumnShape::new("version", "integer"),
+                ColumnShape::new("deleted", "boolean"),
+                ColumnShape::new("user_id", "string"),
+            ]),
+        );
+        let snap = SchemaSnapshot::new(tables);
+        let issues = reg.validate_remote_schema_snapshot(&snap);
+        assert!(
+            issues.iter().any(|i| i.contains("content") && i.contains("type mismatch")),
+            "expected type-mismatch issue for content; got {issues:?}"
+        );
+    }
+
+    #[test]
+    fn validate_remote_schema_snapshot_passes_self_consistent_snapshot() {
+        let reg = Registry::new();
+        reg.register(messages_config());
+        let snap = reg.build_remote_snapshot_from_registry();
+        let issues = reg.validate_remote_schema_snapshot(&snap);
+        assert!(issues.is_empty(), "self-consistent snapshot should validate cleanly: {issues:?}");
+    }
+
+    #[test]
+    fn validate_local_schema_snapshot_includes_local_only_tables() {
+        let reg = Registry::new();
+        reg.register(messages_config());
+        reg.register(
+            EntityConfig::local_only("drafts").columns([ColumnDef::local_only("id", "TEXT")]),
+        );
+
+        let mut tables = HashMap::new();
+        // Provide messages but skip drafts → expect a missing-table issue.
+        tables.insert(
+            "messages".to_string(),
+            TableShape::new(vec![
+                ColumnShape::new("id", "TEXT"),
+                ColumnShape::new("content", "TEXT"),
+                ColumnShape::new("version", "INTEGER"),
+                ColumnShape::new("deleted", "INTEGER"),
+            ]),
+        );
+        let snap = SchemaSnapshot::new(tables);
+        let issues = reg.validate_local_schema_snapshot(&snap);
+        assert!(
+            issues.iter().any(|i| i == "missing table: drafts"),
+            "expected missing-table issue for drafts; got {issues:?}"
+        );
     }
 }
