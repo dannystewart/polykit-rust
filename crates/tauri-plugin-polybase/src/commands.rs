@@ -112,11 +112,21 @@ fn to_command_error<E: std::fmt::Display>(err: E) -> String {
 /// `configure` — initialize the client + session store + optional encryption from a
 /// JSON configuration object provided by the frontend. Builds the [`Coordinator`] as a side
 /// effect IF [`RuntimeHandle::attach`] has already supplied the LocalStore + OfflineQueue.
+///
+/// Calling `configure` more than once is supported (dev-mode HMR reloads, hosts that
+/// re-configure to update the bucket name, etc.). The active [`SessionStore`] is preserved
+/// across reconfigure so the host's auth-shim references stay valid and downstream
+/// commands like `storage_download` keep seeing the active session. Hosts that legitimately
+/// want to drop the session should call `clear_session` first.
 #[tauri::command]
 pub async fn configure(
     config: ClientConfig,
     state: tauri::State<'_, RuntimeHandle>,
 ) -> Result<(), String> {
+    configure_inner(&state, config).await
+}
+
+async fn configure_inner(state: &RuntimeHandle, config: ClientConfig) -> Result<(), String> {
     let client = Client::new(config.clone()).map_err(to_command_error)?;
     let encryption = match &config.encryption_secret {
         Some(secret) => Some(Encryption::new(secret).map_err(to_command_error)?),
@@ -125,7 +135,14 @@ pub async fn configure(
 
     let mut guard = state.inner.write().await;
     let bus = std::mem::take(&mut guard.events);
-    let sessions = SessionStore::new(client.clone(), bus.clone());
+
+    // Preserve the existing SessionStore across reconfigure. Wiping it would drop the
+    // active user's session even though it's still valid; downstream commands like
+    // storage_download would then fail with "no active session" until the host re-pushes
+    // the session, which it may not do (e.g. supabase-js dedups its own SIGNED_IN events
+    // on reload, leaving the host without a SIGNED_IN handler to relay).
+    let sessions =
+        guard.sessions.take().unwrap_or_else(|| SessionStore::new(client.clone(), bus.clone()));
 
     // Make sure KVS is registered so the kvs_* commands work out of the box.
     Kvs::register(&guard.registry);
@@ -142,7 +159,9 @@ pub async fn configure(
                 local.clone(),
             );
             // Bridge LocalStore::switch_user into session-changed events so per-user mirrors
-            // swap automatically on sign-in / account switch.
+            // swap automatically on sign-in / account switch. on_user_changed is single-slot
+            // (replaces any previously-registered hook), so re-registering after preserving
+            // the store is safe and keeps the binding pointed at the latest LocalStore.
             let local_for_hook = local.clone();
             sessions.on_user_changed(move |new_user| {
                 let local = local_for_hook.clone();
@@ -549,5 +568,58 @@ fn bucket_with_optional_encryption(
     match encryption {
         Some(enc) => bucket.with_encryption(enc, Encryption::key_user_uuid(user_id)),
         None => bucket,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_config() -> ClientConfig {
+        ClientConfig {
+            supabase_url: "https://test.supabase.co".to_string(),
+            supabase_anon_key: "test_anon_key".to_string(),
+            encryption_secret: None,
+            storage_bucket: None,
+        }
+    }
+
+    fn fixture_payload() -> SessionPayload {
+        SessionPayload {
+            user_id: "user-1".to_string(),
+            access_token: "token-1".to_string(),
+            refresh_token: "refresh-1".to_string(),
+            expires_at: i64::MAX,
+            updated_at: 0,
+        }
+    }
+
+    /// Regression: calling `configure` more than once must not wipe the active session.
+    ///
+    /// Real-world trigger: Vite HMR reloads in Tauri dev mode cause the JS layer's
+    /// `ensurePolybaseConfigured()` to fire `plugin:polybase|configure` again, while
+    /// `supabase-js` dedups its own `SIGNED_IN` events on reload — so the host never
+    /// re-pushes the session via `set_session`. Without this preservation guard,
+    /// `state.sessions` is silently replaced with an empty store and downstream commands
+    /// like `storage_download` fail with "no active session" until the next sign-in.
+    #[tokio::test]
+    async fn configure_preserves_session_across_reconfigure() {
+        let runtime = RuntimeHandle::default();
+
+        configure_inner(&runtime, fixture_config()).await.expect("first configure");
+        let store = runtime.sessions().await.expect("sessions populated after first configure");
+        store.set_session(fixture_payload()).await.expect("set_session");
+        assert!(store.current().await.is_some(), "session present after set_session");
+
+        configure_inner(&runtime, fixture_config()).await.expect("second configure");
+        let preserved = runtime
+            .sessions()
+            .await
+            .expect("sessions populated after second configure")
+            .current()
+            .await
+            .expect("session preserved across reconfigure");
+        assert_eq!(preserved.user_id, "user-1");
+        assert_eq!(preserved.access_token, "token-1");
     }
 }
