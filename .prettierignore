@@ -1,5 +1,6 @@
 boulder.json
 bun.lockb
+crates/tauri-plugin-polybase/permissions/schemas/schema.json
 package-lock.json
 pnpm-lock.yaml
 schema.json
