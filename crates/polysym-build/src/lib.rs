@@ -163,7 +163,7 @@ enum SymbolResolution {
 /// emit a single top-level `cargo::warning` until they rerun the refresh
 /// script. Pure-spec changes (size, weight, padding) are tracked per-symbol
 /// in the manifest and don't require a bump.
-const CACHE_FORMAT_VERSION: u32 = 1;
+const CACHE_FORMAT_VERSION: u32 = 2;
 
 /// Compact, stable signature of the rendering inputs for one symbol that
 /// affect cached file contents. Lucide name is omitted on purpose — it only
@@ -453,40 +453,52 @@ pub fn generate_with_opts(specs: &[SymbolSpec]) {
 }
 
 /// Post-process raw sfsym output (PNG padding + SVG normalization) for one symbol.
+///
+/// Only the **light** PNG is rendered by `sfsym` (in monochrome mode at
+/// `#000000`). The **dark** PNG is then derived by [`invert_rgb_to`] because
+/// `sfsym`'s PNG monochrome path always produces black regardless of the
+/// requested `--color`. Inverting the working light render gives a perfectly
+/// uniform white silhouette for every symbol — including ones with multi-tier
+/// hierarchical layers, which used to come out with the 1.0 / 0.68 / 0.32
+/// opacity ladder when we worked around the bug with `--mode hierarchical`.
 fn finalize_sfsym_assets(spec: &SymbolSpec, symbol_dir: &Path, sfsym: Option<&Path>) {
-    for variant in ["light", "dark"] {
-        let path = symbol_dir.join(format!("{}.{}.png", spec.name, variant));
-        apply_padding(&path, spec);
-    }
+    let light_path = symbol_dir.join(format!("{}.light.png", spec.name));
+    apply_padding(&light_path, spec);
+
+    let dark_path = symbol_dir.join(format!("{}.dark.png", spec.name));
+    invert_rgb_to(&light_path, &dark_path);
+
     let svg_path = symbol_dir.join(format!("{}.svg", spec.name));
     let info = sfsym.and_then(|s| query_symbol_info(s, &spec.name));
     apply_svg_postprocess(&svg_path, spec, info.as_ref());
 }
 
-/// Run all three sfsym batches and report which symbols fully succeeded.
+/// Run the sfsym batches and report which symbols fully succeeded.
 ///
-/// Returns an empty set if any batch fails entirely; otherwise verifies on a
-/// per-symbol basis that all three output files exist (some symbols may be
+/// Only the **light** PNG and the SVG are rendered through `sfsym`. The dark
+/// PNG is derived later in [`finalize_sfsym_assets`] by inverting the light
+/// PNG, since `sfsym`'s PNG monochrome path ignores `--color` and always
+/// produces black.
+///
+/// Returns an empty set if either batch fails entirely; otherwise verifies on
+/// a per-symbol basis that both output files exist (some symbols may be
 /// invalid SF Symbol names and silently skipped by sfsym).
 fn run_sfsym_for_all(sfsym: &Path, specs: &[SymbolSpec], symbol_dir: &Path) -> HashSet<String> {
     let light_batch = build_png_batch_input(specs, symbol_dir, "light", "monochrome", "#000000");
-    let dark_batch = build_png_batch_input(specs, symbol_dir, "dark", "hierarchical", "#ffffff");
     let svg_batch = build_svg_batch_input(specs, symbol_dir);
 
     let light_ok = run_batch(sfsym, &light_batch, "light PNG");
-    let dark_ok = run_batch(sfsym, &dark_batch, "dark PNG");
     let svg_ok = run_batch(sfsym, &svg_batch, "SVG");
 
-    if !(light_ok && dark_ok && svg_ok) {
+    if !(light_ok && svg_ok) {
         return HashSet::new();
     }
 
     let mut succeeded = HashSet::new();
     for spec in specs {
         let light = symbol_dir.join(format!("{}.light.png", spec.name));
-        let dark = symbol_dir.join(format!("{}.dark.png", spec.name));
         let svg = symbol_dir.join(format!("{}.svg", spec.name));
-        if light.exists() && dark.exists() && svg.exists() {
+        if light.exists() && svg.exists() {
             succeeded.insert(spec.name.clone());
         }
     }
@@ -664,7 +676,6 @@ fn rasterize_svg_to_png(svg: &str, spec: &SymbolSpec) -> Vec<u8> {
 /// scaling occurs.
 fn apply_padding(path: &Path, spec: &SymbolSpec) {
     use image::RgbaImage;
-    use std::io::BufWriter;
 
     let canvas_px = spec.canvas_px();
     let inner_px = spec.inner_size() * 2;
@@ -682,29 +693,64 @@ fn apply_padding(path: &Path, spec: &SymbolSpec) {
     let y_off = (canvas_px - src.height()) / 2;
     image::imageops::overlay(&mut canvas, &src, i64::from(x_off), i64::from(y_off));
 
+    write_rgba_png_at_2x(path, &canvas);
+}
+
+/// Derive a white-on-transparent dark variant from the (working) black-on-
+/// transparent light variant by inverting the R/G/B channels and preserving
+/// alpha. Anti-aliased edges stay smooth because the light render encodes
+/// coverage as alpha, not as gray RGB — so `(0,0,0,a)` maps to `(255,255,255,a)`,
+/// which is true partial-coverage white.
+///
+/// This is the workaround for `sfsym`'s PNG monochrome path always producing
+/// black regardless of `--color`, which appears to stem from the symbol
+/// rendering as a template image under the hardcoded `aqua` appearance.
+fn invert_rgb_to(src: &Path, dst: &Path) {
+    let src_img = image::open(src)
+        .unwrap_or_else(|e| panic!("failed to open {} for inversion: {e}", src.display()))
+        .to_rgba8();
+    let (width, height) = src_img.dimensions();
+
+    let mut out = image::RgbaImage::new(width, height);
+    for (src_pixel, dst_pixel) in src_img.pixels().zip(out.pixels_mut()) {
+        let [red, green, blue, alpha] = src_pixel.0;
+        dst_pixel.0 = [255 - red, 255 - green, 255 - blue, alpha];
+    }
+
+    write_rgba_png_at_2x(dst, &out);
+}
+
+/// pHYs chunk encoding 5669 pixels/meter ≈ 144 DPI = @2x Retina density.
+const PHYS_2X: [u8; 9] = {
+    const PPM_2X: u32 = 5669;
+    let bytes = PPM_2X.to_be_bytes();
+    [bytes[0], bytes[1], bytes[2], bytes[3], bytes[0], bytes[1], bytes[2], bytes[3], 1]
+};
+
+/// Write an RGBA image as a PNG with the @2x Retina `pHYs` chunk attached.
+///
+/// See [`apply_padding`] for why the `pHYs` chunk matters for `NSImage`
+/// pixel-density interpretation.
+fn write_rgba_png_at_2x(path: &Path, image: &image::RgbaImage) {
+    use std::io::BufWriter;
+
+    let (w, h) = image.dimensions();
     let file = std::fs::File::create(path)
         .unwrap_or_else(|e| panic!("failed to open {} for writing: {e}", path.display()));
 
-    let mut enc = png::Encoder::new(BufWriter::new(file), canvas_px, canvas_px);
+    let mut enc = png::Encoder::new(BufWriter::new(file), w, h);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
 
     let mut writer =
         enc.write_header().unwrap_or_else(|e| panic!("PNG header for {}: {e}", path.display()));
 
-    // pHYs chunk: 5669 pixels/meter ≈ 144 DPI = @2x Retina.
-    #[allow(clippy::items_after_statements)]
-    const PPM_2X: u32 = 5669;
-    let mut phys = [0u8; 9];
-    phys[0..4].copy_from_slice(&PPM_2X.to_be_bytes());
-    phys[4..8].copy_from_slice(&PPM_2X.to_be_bytes());
-    phys[8] = 1; // unit: meter
     writer
-        .write_chunk(png::chunk::ChunkType(*b"pHYs"), &phys)
+        .write_chunk(png::chunk::ChunkType(*b"pHYs"), &PHYS_2X)
         .unwrap_or_else(|e| panic!("pHYs chunk for {}: {e}", path.display()));
 
     writer
-        .write_image_data(canvas.as_raw())
+        .write_image_data(image.as_raw())
         .unwrap_or_else(|e| panic!("PNG data for {}: {e}", path.display()));
 }
 
