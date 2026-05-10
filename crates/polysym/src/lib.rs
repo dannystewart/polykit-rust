@@ -15,21 +15,32 @@
 //!
 //! # Native menu icons (PNG)
 //!
+//! Use [`SfImage::to_tauri_menu_image`] (or [`SfImage::to_tauri_menu_image_for`]) for
+//! `IconMenuItem` so Windows omits icons by default while macOS and Linux keep them. Use
+//! [`SfImage::to_tauri_image`] for tray buttons, WebView chrome, and anywhere else you still want
+//! a PNG on Windows.
+//!
 //! ```rust,ignore
 //! use crate::icons::SfIcons;
 //!
-//! let icon = SfIcons::trash().to_tauri_image()?;
-//! let item = IconMenuItem::with_id(app, "delete", "Delete", true, Some(icon), None::<&str>)?;
+//! let item = IconMenuItem::with_id(
+//!     app,
+//!     "delete",
+//!     "Delete",
+//!     true,
+//!     SfIcons::trash().to_tauri_menu_image()?,
+//!     None::<&str>,
+//! )?;
 //! ```
 //!
-//! For menus built from the JS side, expose a Tauri command:
+//! For menus built from the JS side, expose a command that uses [`SfImage::menu_png_bytes_for`]
+//! (returns `None` on Windows unless the `windows_menu_icons` crate feature is enabled):
 //!
 //! ```rust,ignore
 //! #[tauri::command]
-//! fn sf_icon(name: String, dark: bool) -> Result<Vec<u8>, String> {
-//!     icons::SfIcons::get(&name)
-//!         .map(|img| img.bytes_for(dark).to_vec())
-//!         .ok_or_else(|| format!("sf symbol not registered: {name}"))
+//! fn sf_menu_icon(name: String, dark: bool) -> Result<Option<Vec<u8>>, String> {
+//!     Ok(icons::SfIcons::get(&name)
+//!         .and_then(|img| img.menu_png_bytes_for(dark).map(|bytes| bytes.to_vec())))
 //! }
 //! ```
 //!
@@ -71,7 +82,8 @@ use tauri::image::Image;
 /// A light/dark pair of raw PNG bytes for an SF Symbol.
 ///
 /// Created by the generated `SfIcons` methods. Call [`to_tauri_image`](SfImage::to_tauri_image)
-/// to produce a `tauri::image::Image` for the current system appearance.
+/// for toolbars, tray images, and other UI. For native context menus and menu bar items, prefer
+/// [`to_tauri_menu_image`](SfImage::to_tauri_menu_image) so Windows can omit icons by default.
 pub struct SfImage {
     light: &'static [u8],
     dark: &'static [u8],
@@ -119,6 +131,59 @@ impl SfImage {
     /// Returns an error if the PNG bytes cannot be decoded by Tauri.
     pub fn to_tauri_image(&self) -> tauri::Result<Image<'static>> {
         Image::from_bytes(self.bytes())
+    }
+
+    /// PNG bytes for a native menu icon, or `None` when menu icons are suppressed on this
+    /// platform.
+    ///
+    /// On Windows, returns `None` by default so frontends can pass `undefined` for
+    /// `IconMenuItemOptions.icon` without duplicating menu definitions. Enable the
+    /// `polysym/windows_menu_icons` crate feature to return [`Some`] with the same bytes as
+    /// [`bytes_for`](Self::bytes_for) on Windows.
+    ///
+    /// On macOS and Linux, always returns [`Some`].
+    #[must_use]
+    pub fn menu_png_bytes_for(&self, dark_mode: bool) -> Option<&'static [u8]> {
+        #[cfg(all(target_os = "windows", not(feature = "windows_menu_icons")))]
+        {
+            let _ = (self, dark_mode);
+            None
+        }
+        #[cfg(not(all(target_os = "windows", not(feature = "windows_menu_icons"))))]
+        {
+            Some(self.bytes_for(dark_mode))
+        }
+    }
+
+    /// Convert to a `tauri::image::Image` for a native menu item and explicit appearance.
+    ///
+    /// On Windows, returns `Ok(None)` by default (no decode). With the `windows_menu_icons`
+    /// feature, behaves like [`to_tauri_image_for`](Self::to_tauri_image_for).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the PNG bytes cannot be decoded by Tauri (non-Windows, or Windows
+    /// with `windows_menu_icons` enabled).
+    pub fn to_tauri_menu_image_for(
+        &self,
+        dark_mode: bool,
+    ) -> tauri::Result<Option<Image<'static>>> {
+        #[cfg(all(target_os = "windows", not(feature = "windows_menu_icons")))]
+        {
+            let _ = (self, dark_mode);
+            Ok(None)
+        }
+        #[cfg(not(all(target_os = "windows", not(feature = "windows_menu_icons"))))]
+        {
+            self.to_tauri_image_for(dark_mode).map(Some)
+        }
+    }
+
+    /// Convert to a `tauri::image::Image` for a native menu item using [`is_dark_mode`].
+    ///
+    /// See [`to_tauri_menu_image_for`](Self::to_tauri_menu_image_for).
+    pub fn to_tauri_menu_image(&self) -> tauri::Result<Option<Image<'static>>> {
+        self.to_tauri_menu_image_for(is_dark_mode())
     }
 }
 

@@ -6,8 +6,14 @@ SF Symbol icons for Tauri apps — native menus and WebView UI elements, with cr
 
 Two formats are generated for every symbol in your manifest:
 
-- **PNG** (light + dark variants) for native menu icons via `IconMenuItem`
+- **PNG** (light + dark variants) — use `SfImage::to_tauri_menu_image` for `IconMenuItem`; use `SfImage::to_tauri_image` for tray images and other native UI where you still want a PNG on Windows
 - **SVG** (single `currentColor` variant) for WebView UI elements — color is controlled by CSS, so dark mode, tinting, and hover states all work automatically
+
+By default, **Windows** omits PNGs for **native menu items only** (`to_tauri_menu_image`, `menu_png_bytes_for`) so you can share one menu tree with macOS and Linux. Enable the `windows_menu_icons` feature on the `polysym` dependency if you want menu icons on Windows anyway:
+
+```toml
+polysym = { git = "https://github.com/dannystewart/polykit-rust", features = ["windows_menu_icons"] }
+```
 
 ## Three-tier resolution
 
@@ -111,7 +117,7 @@ let item = IconMenuItem::with_id(
     "delete",
     "Delete Conversation",
     true,
-    Some(SfIcons::trash().to_tauri_image()?),
+    SfIcons::trash().to_tauri_menu_image()?,
     None::<&str>,
 )?;
 ```
@@ -127,7 +133,7 @@ Symbol names map to methods by replacing dots and hyphens with underscores:
 
 ### From JavaScript / Svelte (JS-side menu construction)
 
-Expose a Tauri command that bridges the icon bytes to your frontend:
+Expose a command that uses `menu_png_bytes_for` so Windows gets `null` without branching in TypeScript:
 
 ```rust
 // src/lib.rs
@@ -135,42 +141,37 @@ mod icons;
 use icons::SfIcons;
 
 #[tauri::command]
-fn sf_icon(name: String) -> Result<Vec<u8>, String> {
-    SfIcons::get(&name)
-        .map(|img| img.bytes().to_vec())
-        .ok_or_else(|| format!("sf symbol not registered: {name}"))
+fn sf_menu_icon(name: String, dark: bool) -> Result<Option<Vec<u8>>, String> {
+    Ok(SfIcons::get(&name).and_then(|img| {
+        img.menu_png_bytes_for(dark).map(|bytes| bytes.to_vec())
+    }))
 }
 ```
 
-Then in Svelte (the return type `number[]` is accepted directly by `IconMenuItemOptions.icon`):
+Then in Svelte (`icon` may be `undefined` on Windows or when the symbol is missing):
 
 ```ts
 import { invoke } from "@tauri-apps/api/core"
 import { IconMenuItem, Menu } from "@tauri-apps/api/menu"
 
 const dark = window.matchMedia("(prefers-color-scheme: dark)").matches
-const trashIcon = await invoke<number[]>("sf_icon", { name: "trash", dark }).catch(() => undefined)
+const trashIcon = await invoke<number[] | null>("sf_menu_icon", { name: "trash", dark }).catch(
+    () => null,
+)
 
 const deleteItem = await IconMenuItem.new({
     id: "delete-conversation",
     text: "Delete Conversation",
-    icon: trashIcon,
+    icon: trashIcon ?? undefined,
     action: () => { /* ... */ },
 })
 ```
 
-Passing `dark` explicitly from the JS side is more reliable than letting the Rust command detect appearance via a subprocess. `window.matchMedia("(prefers-color-scheme: dark)").matches` is evaluated by Tauri's WKWebView directly against the macOS system appearance, making it the most accurate and zero-cost source of truth. The `.catch(() => undefined)` is a safe fallback: if `sf_icon` fails (e.g. in a web dev build without the Tauri runtime), the menu item renders without an icon rather than throwing.
+Passing `dark` explicitly from the JS side is more reliable than letting the Rust command detect appearance via a subprocess. On macOS, `window.matchMedia("(prefers-color-scheme: dark)").matches` tracks system appearance inside Tauri’s webview.
 
-The corresponding Tauri command signature should accept the `dark` flag and call `bytes_for`:
+For **non-menu** PNGs (tray, window icons, etc.), keep a separate command that uses `bytes` / `bytes_for` so Windows still receives bytes.
 
-```rust
-#[tauri::command]
-fn sf_icon(name: String, dark: bool) -> Result<Vec<u8>, String> {
-    SfIcons::get(&name)
-        .map(|img| img.bytes_for(dark).to_vec())
-        .ok_or_else(|| format!("sf symbol not registered: {name}"))
-}
-```
+If you need menu icons on Windows, enable `polysym`’s `windows_menu_icons` feature; `sf_menu_icon` will then return `Some` on Windows the same as on Linux.
 
 ### From JavaScript / Svelte (WebView UI elements via SVG)
 
@@ -187,7 +188,7 @@ fn sf_svg(name: String) -> Result<String, String> {
 }
 ```
 
-Register it alongside `sf_icon` in `invoke_handler!`. Then in Svelte:
+Register it alongside your icon commands (for example `sf_menu_icon` for native menus) in `invoke_handler!`. Then in Svelte:
 
 ```svelte
 <script lang="ts">

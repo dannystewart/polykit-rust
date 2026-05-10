@@ -10,6 +10,13 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+## When enabled, `SfImage::to_tauri_menu_image` and `SfImage::menu_png_bytes_for` decode and
+## return PNGs on Windows like other platforms. By default those APIs omit menu icons on Windows
+## so one menu definition looks acceptable everywhere.
+windows_menu_icons = []
+
 [dependencies]
 tauri = { workspace = true, features = ["image-png"] }
 
