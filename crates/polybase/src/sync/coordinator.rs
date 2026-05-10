@@ -15,13 +15,14 @@
 
 use std::sync::Arc;
 
+use polylog::debug;
 use serde_json::{Map, Value};
 
 use crate::auth::SessionStore;
 use crate::client::Client;
 use crate::edge::{EdgeClient, EdgeRequest};
 use crate::encryption::Encryption;
-use crate::errors::{PolyError, RegistryError};
+use crate::errors::{PolyError, PushError, RegistryError};
 use crate::events::{EventBus, PolyEvent};
 use crate::offline_queue::{OfflineQueue, QueuedOperation, QueuedOperationKind};
 use crate::persistence::{LocalStore, Record, VersionRow};
@@ -209,6 +210,16 @@ impl Coordinator {
                 }
                 Ok(())
             }
+            // Same-version mutation is the trigger's benign rejection — the row is already at
+            // this version on the server, typically from a concurrent push. Treat as success.
+            // Mirrors Swift `PolyBase`'s `isSameVersionMutationError` short-circuit.
+            Err(PolyError::Push(PushError::SameVersionMutationIgnored { .. })) => {
+                debug!("polybase: same-version mutation ignored for {table} {entity_id} (benign)",);
+                if table == crate::kvs::KVS_TABLE {
+                    self.publish_kvs_event(&record, false);
+                }
+                Ok(())
+            }
             Err(err) if is_transient(&err) => {
                 let queued = QueuedOperation {
                     table: table.into(),
@@ -228,7 +239,19 @@ impl Coordinator {
                 }
                 Ok(())
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                // Permanent rejection: drop from queue. If it's a version regression, also
+                // signal so host apps can trigger a targeted pull and converge. The error
+                // still propagates so callers can surface it (e.g. for diagnostics) — only
+                // the side-effect of the event is added.
+                if is_version_regression(&err) {
+                    self.inner.events.publish(PolyEvent::VersionRegressionDetected {
+                        table: table.into(),
+                        entity_id,
+                    });
+                }
+                Err(err)
+            }
         }
     }
 
@@ -341,6 +364,13 @@ impl Coordinator {
                 }
                 Ok(())
             }
+            Err(PolyError::Push(PushError::SameVersionMutationIgnored { .. })) => {
+                debug!(
+                    "polybase: same-version mutation ignored on tombstone for {table} \
+                     {entity_id} (benign)",
+                );
+                Ok(())
+            }
             Err(err) if is_transient(&err) => {
                 let queued = QueuedOperation {
                     table: table.into(),
@@ -357,7 +387,15 @@ impl Coordinator {
                     .publish(PolyEvent::OfflineQueueChanged { depth, in_flight: false });
                 Ok(())
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                if is_version_regression(&err) {
+                    self.inner.events.publish(PolyEvent::VersionRegressionDetected {
+                        table: table.into(),
+                        entity_id: entity_id.into(),
+                    });
+                }
+                Err(err)
+            }
         }
     }
 
@@ -415,6 +453,17 @@ fn is_transient(err: &PolyError) -> bool {
         PolyError::Edge(EdgeError::Transient { .. } | EdgeError::Forbidden { .. }) => true,
         PolyError::Push(PushError::Transient { .. }) => true,
         PolyError::Http(_) => true,
+        _ => false,
+    }
+}
+
+/// True when a permanent push/edge failure is a version regression — caller is older than the
+/// server. The coordinator emits `PolyEvent::VersionRegressionDetected` for these so consumers
+/// can trigger a targeted pull and converge.
+fn is_version_regression(err: &PolyError) -> bool {
+    match err {
+        PolyError::Push(push) => push.is_version_regression(),
+        PolyError::Edge(edge) => edge.is_version_regression(),
         _ => false,
     }
 }
@@ -787,6 +836,63 @@ mod tests {
         assert_eq!(local_row["content"], json!("hello"));
         assert_eq!(local_row["version"], json!(4));
         assert!(local_row.get("ignored_remote_only").is_none());
+    }
+
+    #[test]
+    fn is_transient_does_not_swallow_same_version_mutation() {
+        // The coordinator handles `SameVersionMutationIgnored` in its OWN match arm before
+        // `is_transient` is consulted. If `is_transient` ever started returning true for it,
+        // the row would be enqueued for retry forever — that's the regression this pins.
+        let err = PolyError::Push(PushError::SameVersionMutationIgnored {
+            table: "conversations".into(),
+        });
+        assert!(!is_transient(&err));
+        assert!(!is_version_regression(&err), "same-version is not a regression");
+    }
+
+    #[test]
+    fn is_version_regression_recognises_push_and_edge_failures() {
+        let push = PolyError::Push(PushError::Permanent {
+            table: "conversations".into(),
+            message: "HTTP 500: version regression rejected".into(),
+        });
+        assert!(is_version_regression(&push));
+        assert!(!is_transient(&push));
+
+        let edge = PolyError::Edge(crate::errors::EdgeError::Permanent {
+            function: "conversations-write".into(),
+            message: "Version Regression: local v3 < remote v8".into(),
+        });
+        assert!(is_version_regression(&edge));
+
+        // Other permanent errors do NOT trip the regression path.
+        let other = PolyError::Push(PushError::Permanent {
+            table: "conversations".into(),
+            message: "HTTP 400: violates check constraint".into(),
+        });
+        assert!(!is_version_regression(&other));
+    }
+
+    #[tokio::test]
+    async fn version_regression_detected_event_round_trips_through_event_bus() {
+        // Documents the event variant the coordinator emits on regression. Synthesizing a
+        // real regression response from `example.supabase.co` would need wiremock; this test
+        // pins the wire contract callers (the JS plugin, host apps) subscribe against.
+        let local = Arc::new(MemLocalStore::new());
+        let (coord, _sessions) = coordinator_with_local(None, local);
+        let mut rx = coord.events().subscribe();
+        coord.inner.events.publish(PolyEvent::VersionRegressionDetected {
+            table: "conversations".into(),
+            entity_id: "abc".into(),
+        });
+        let event = rx.recv().await.unwrap();
+        match event {
+            PolyEvent::VersionRegressionDetected { table, entity_id } => {
+                assert_eq!(table, "conversations");
+                assert_eq!(entity_id, "abc");
+            }
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[tokio::test]

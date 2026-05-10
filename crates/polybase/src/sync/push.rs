@@ -15,6 +15,11 @@ use crate::client::Client;
 use crate::errors::{PolyError, PushError};
 use crate::sync::echo::EchoTracker;
 
+// Re-export the contract-level message classifiers so existing callers can keep importing them
+// from `polybase::sync::push` without a separate `contract` import. Both PostgREST and Edge
+// response paths use the same matchers — they live in `contract` to break the dep cycle.
+pub use crate::contract::{is_same_version_mutation_message, is_version_regression_message};
+
 /// PostgREST pusher.
 #[derive(Debug, Clone)]
 pub(crate) struct Pusher {
@@ -70,8 +75,7 @@ impl Pusher {
             return Ok(());
         }
         let body = resp.text().await.unwrap_or_default();
-        let lower = body.to_ascii_lowercase();
-        if lower.contains("same-version mutation") || lower.contains("ignored") {
+        if is_same_version_mutation_message(&body) {
             return Err(PolyError::Push(PushError::SameVersionMutationIgnored {
                 table: table.into(),
             }));

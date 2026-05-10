@@ -69,6 +69,18 @@ pub enum PolyEvent {
         /// True for tombstone events.
         deleted: bool,
     },
+
+    /// A push to remote was rejected because the local version is older than what the server
+    /// has — the local mirror is out of date and needs to converge with the newer remote row.
+    /// The coordinator drops the operation rather than retrying it, but emits this event so
+    /// host apps can trigger a targeted pull (or full reconcile pass) for the affected entity.
+    /// Mirrors Swift `PolyBase`'s `polyBaseVersionRegressionDetected` notification.
+    VersionRegressionDetected {
+        /// Table whose write was rejected.
+        table: String,
+        /// Primary key of the row whose write was rejected.
+        entity_id: String,
+    },
 }
 
 /// What kind of change happened to the active session.

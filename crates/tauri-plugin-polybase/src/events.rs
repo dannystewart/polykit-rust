@@ -40,5 +40,6 @@ fn topic_for(event: &PolyEvent) -> &'static str {
         PolyEvent::ReconcileProgress { .. } => "polybase:reconcile_progress",
         PolyEvent::PullProgress { .. } => "polybase:pull_progress",
         PolyEvent::KvsChanged { .. } => "polybase:kvs_changed",
+        PolyEvent::VersionRegressionDetected { .. } => "polybase:version_regression_detected",
     }
 }

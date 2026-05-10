@@ -2,6 +2,7 @@
 
 use thiserror::Error;
 
+use crate::contract::{is_same_version_mutation_message, is_version_regression_message};
 use crate::encryption::EncryptionError;
 
 /// Top-level error covering anything PolyBase can fail at.
@@ -135,6 +136,47 @@ impl EdgeError {
     pub fn is_transient(&self) -> bool {
         matches!(self, Self::Transient { .. } | Self::Forbidden { .. })
     }
+
+    /// Borrow the human-readable message body, regardless of variant. Useful for caller-side
+    /// classification — e.g. distinguishing a benign same-version mutation surfaced through
+    /// an Edge Function from a real `Conflict` that should propagate to the user.
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Validation { message, .. }
+            | Self::Conflict { message, .. }
+            | Self::Forbidden { message, .. }
+            | Self::Transient { message, .. }
+            | Self::Permanent { message, .. }
+            | Self::Decode { message, .. } => message,
+        }
+    }
+
+    /// Borrow the Edge Function name that produced the error.
+    pub fn function(&self) -> &str {
+        match self {
+            Self::Validation { function, .. }
+            | Self::Conflict { function, .. }
+            | Self::Forbidden { function, .. }
+            | Self::Transient { function, .. }
+            | Self::Permanent { function, .. }
+            | Self::Decode { function, .. } => function,
+        }
+    }
+
+    /// True when this Edge error wraps the trigger's benign same-version mutation rejection.
+    /// Caller should treat the operation as a no-op success — the push already happened
+    /// (typically from a concurrent task on the same client). Mirrors Swift `PolyBase`'s
+    /// `isSameVersionMutationError` check.
+    pub fn is_benign_same_version_mutation(&self) -> bool {
+        is_same_version_mutation_message(self.message())
+    }
+
+    /// True when this Edge error wraps a version regression rejection. Caller should drop the
+    /// operation rather than retry, and ideally trigger a reconcile pull so the local mirror
+    /// catches up with the newer remote state.
+    pub fn is_version_regression(&self) -> bool {
+        is_version_regression_message(self.message())
+    }
 }
 
 /// Error class for push operations (PostgREST upserts, tombstone updates).
@@ -175,6 +217,16 @@ impl PushError {
     /// True for failures that should drop the operation rather than retry.
     pub fn is_permanent(&self) -> bool {
         matches!(self, Self::Permanent { .. })
+    }
+
+    /// True when a `Permanent` push failure carries the version regression marker. The
+    /// coordinator uses this to fire a `PolyEvent::VersionRegressionDetected` so consumers
+    /// can trigger a targeted pull to converge with the newer remote state.
+    pub fn is_version_regression(&self) -> bool {
+        match self {
+            Self::Permanent { message, .. } => is_version_regression_message(message),
+            _ => false,
+        }
     }
 }
 
@@ -287,4 +339,99 @@ pub enum OfflineQueueError {
     /// Queue persistence file failed to deserialize.
     #[error("queue decode failed: {0}")]
     Decode(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn edge_conflict_with(message: &str) -> EdgeError {
+        EdgeError::Conflict {
+            function: "conversations-write".into(),
+            code: "version_conflict".into(),
+            message: message.into(),
+        }
+    }
+
+    fn edge_permanent_with(message: &str) -> EdgeError {
+        EdgeError::Permanent { function: "conversations-write".into(), message: message.into() }
+    }
+
+    #[test]
+    fn edge_error_message_accessor_covers_all_variants() {
+        let cases: [(EdgeError, &str); 6] = [
+            (
+                EdgeError::Validation {
+                    function: "f".into(),
+                    code: "c".into(),
+                    message: "v_msg".into(),
+                },
+                "v_msg",
+            ),
+            (
+                EdgeError::Conflict {
+                    function: "f".into(),
+                    code: "c".into(),
+                    message: "c_msg".into(),
+                },
+                "c_msg",
+            ),
+            (EdgeError::Forbidden { function: "f".into(), message: "f_msg".into() }, "f_msg"),
+            (EdgeError::Transient { function: "f".into(), message: "t_msg".into() }, "t_msg"),
+            (EdgeError::Permanent { function: "f".into(), message: "p_msg".into() }, "p_msg"),
+            (EdgeError::Decode { function: "f".into(), message: "d_msg".into() }, "d_msg"),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.message(), expected, "message mismatch for {err:?}");
+            assert_eq!(err.function(), "f", "function mismatch for {err:?}");
+        }
+    }
+
+    #[test]
+    fn edge_error_classifies_benign_same_version_mutation() {
+        let err = edge_conflict_with("same-version mutation is not allowed");
+        assert!(err.is_benign_same_version_mutation());
+        assert!(!err.is_version_regression());
+    }
+
+    #[test]
+    fn edge_error_classifies_version_regression() {
+        let err = edge_permanent_with("ERROR: version regression rejected");
+        assert!(err.is_version_regression());
+        assert!(!err.is_benign_same_version_mutation());
+    }
+
+    #[test]
+    fn edge_error_unknown_message_is_neither() {
+        let err = edge_conflict_with("rate limited");
+        assert!(!err.is_benign_same_version_mutation());
+        assert!(!err.is_version_regression());
+    }
+
+    #[test]
+    fn push_error_is_version_regression_only_for_permanent_with_marker() {
+        let regression = PushError::Permanent {
+            table: "conversations".into(),
+            message: "HTTP 500: version regression detected".into(),
+        };
+        assert!(regression.is_version_regression());
+
+        let other_permanent = PushError::Permanent {
+            table: "conversations".into(),
+            message: "HTTP 500: violates check constraint".into(),
+        };
+        assert!(!other_permanent.is_version_regression());
+
+        let transient = PushError::Transient {
+            table: "conversations".into(),
+            message: "version regression".into(),
+        };
+        assert!(
+            !transient.is_version_regression(),
+            "version regression markers on transient errors should not pretend to be regressions",
+        );
+
+        let same_version = PushError::SameVersionMutationIgnored { table: "conversations".into() };
+        assert!(!same_version.is_version_regression());
+    }
 }

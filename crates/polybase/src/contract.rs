@@ -111,6 +111,39 @@ pub fn echo_tracker_key(table: &str, entity_id: &str) -> String {
     format!("{table}:{entity_id}")
 }
 
+// -- Trigger error message classifiers -----------------------------------------------------------
+//
+// These match the literal text emitted by Postgres triggers (`guard_version_regression`) and by
+// PostgREST when constraint violations surface. They are part of the frozen contract because the
+// classifiers are shared between the PostgREST push path and the Edge Function response path —
+// both push routes must agree on what is benign vs. permanent vs. transient.
+
+/// Lowercase substring marker for benign same-version mutation rejections — emitted by the
+/// `guard_version_regression` trigger when a write attempts to bump version to a value the
+/// database already has. Treated as a no-op success by the coordinator (the push already
+/// happened, just from a concurrent task).
+pub const SAME_VERSION_MUTATION_MARKER: &str = "same-version mutation";
+
+/// Lowercase substring marker for version regression rejections — emitted when a write attempts
+/// to bump version backwards. Permanent failure: drop from the offline queue and trigger a pull
+/// to converge the local mirror with the newer remote state.
+pub const VERSION_REGRESSION_MARKER: &str = "version regression";
+
+/// True when the (case-insensitive) message body looks like the Postgres trigger's benign
+/// same-version mutation rejection. Use this from any push path — Edge functions, `PostgREST`
+/// upserts, custom executors — to decide whether a remote rejection is a benign duplicate that
+/// can be ignored.
+pub fn is_same_version_mutation_message(message: &str) -> bool {
+    message.to_ascii_lowercase().contains(SAME_VERSION_MUTATION_MARKER)
+}
+
+/// True when the (case-insensitive) message body looks like the Postgres trigger's version
+/// regression rejection. Use this to decide whether a permanent push failure should also fire a
+/// reconcile signal so the host app can pull the newer remote row.
+pub fn is_version_regression_message(message: &str) -> bool {
+    message.to_ascii_lowercase().contains(VERSION_REGRESSION_MARKER)
+}
+
 /// The dedupe key for offline-queue operations.
 pub fn queue_dedupe_key<'a>(table: &'a str, entity_id: &'a str) -> (&'a str, &'a str) {
     (table, entity_id)
@@ -236,6 +269,26 @@ mod tests {
     #[test]
     fn undelete_threshold_uses_plus_1000() {
         assert_eq!(undelete_minimum_version(5), 1005);
+    }
+
+    #[test]
+    fn same_version_mutation_marker_matches_trigger_text() {
+        assert!(is_same_version_mutation_message(
+            "ERROR: same-version mutation is not allowed (current_version=42)",
+        ));
+        assert!(is_same_version_mutation_message("Same-Version Mutation"));
+        assert!(!is_same_version_mutation_message("version regression detected"));
+        assert!(!is_same_version_mutation_message("rate limited"));
+    }
+
+    #[test]
+    fn version_regression_marker_matches_trigger_text() {
+        assert!(is_version_regression_message(
+            "ERROR: version regression rejected (local=12, remote=15)",
+        ));
+        assert!(is_version_regression_message("Version Regression"));
+        assert!(!is_version_regression_message("same-version mutation"));
+        assert!(!is_version_regression_message("undelete requires version"));
     }
 
     #[test]
