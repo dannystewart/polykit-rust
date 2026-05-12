@@ -95,7 +95,7 @@ impl Pusher {
         table: &str,
         entity_id: &str,
         version: i64,
-        updated_at: &str,
+        updated_at: Value,
         access_token: &str,
     ) -> Result<(), PolyError> {
         self.echo.mark_pushed(table, entity_id);

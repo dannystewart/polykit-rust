@@ -51,6 +51,7 @@
 
 use std::collections::HashMap;
 
+use chrono::Utc;
 use parking_lot::RwLock;
 use serde_json::{Map, Value};
 
@@ -311,6 +312,23 @@ impl EntityConfig {
     /// True when this entity participates in remote sync.
     pub fn is_synced(&self) -> bool {
         self.scope == TableScope::Synced
+    }
+
+    /// JSON value for `updated_at` on PostgREST soft-delete tombstone PATCH.
+    ///
+    /// Integer mirror columns (`INTEGER` / `BIGINT` in the registry) use epoch milliseconds,
+    /// matching typical upsert payloads. Text columns (for example [`crate::kvs`]) use RFC3339.
+    /// When no `updated_at` column is registered, defaults to RFC3339 for backward compatibility.
+    pub fn tombstone_updated_at_value(&self) -> Value {
+        let Some(column) = self.columns.iter().find(|c| c.canonical_name == "updated_at") else {
+            return Value::String(Utc::now().to_rfc3339());
+        };
+        let sql_upper = column.sql_type.to_ascii_uppercase();
+        if matches!(sql_upper.as_str(), "INTEGER" | "BIGINT" | "INT" | "INT64") {
+            Value::Number(Utc::now().timestamp_millis().into())
+        } else {
+            Value::String(Utc::now().to_rfc3339())
+        }
     }
 
     /// Translate a record keyed by remote column names into a record keyed by local column
@@ -660,6 +678,61 @@ mod tests {
     fn synced_default_conflict_target_is_id() {
         let cfg = EntityConfig::synced("conversations", "Conversation");
         assert_eq!(cfg.conflict_target, "id");
+    }
+
+    #[test]
+    fn tombstone_updated_at_value_integer_is_epoch_ms() {
+        let cfg = EntityConfig::synced("bookmark_nodes", "BookmarkNode").columns([
+            ColumnDef::synced("id", "id", "id", "TEXT", "string", false),
+            ColumnDef::synced(
+                "updated_at",
+                "updated_at",
+                "updated_at",
+                "INTEGER",
+                "integer",
+                false,
+            ),
+        ]);
+        let value = cfg.tombstone_updated_at_value();
+        let millis = value.as_i64().expect("INTEGER updated_at must serialize as JSON number");
+        assert!(millis > 1_700_000_000_000);
+        assert!(millis < 4_000_000_000_000);
+    }
+
+    #[test]
+    fn tombstone_updated_at_value_bigint_is_epoch_ms() {
+        let cfg = EntityConfig::synced("rows", "Row").columns([ColumnDef::synced(
+            "updated_at",
+            "updated_at",
+            "updated_at",
+            "BIGINT",
+            "integer",
+            false,
+        )]);
+        assert!(cfg.tombstone_updated_at_value().is_number());
+    }
+
+    #[test]
+    fn tombstone_updated_at_value_text_is_rfc3339() {
+        let cfg = EntityConfig::synced("kvs", "Kvs").columns([ColumnDef::synced(
+            "updated_at",
+            "updated_at",
+            "updated_at",
+            "TEXT",
+            "string",
+            false,
+        )]);
+        let value = cfg.tombstone_updated_at_value();
+        let text = value.as_str().expect("TEXT updated_at must serialize as JSON string");
+        assert!(text.contains('T'), "expected RFC3339, got {text}");
+    }
+
+    #[test]
+    fn tombstone_updated_at_value_missing_column_defaults_rfc3339() {
+        let cfg = EntityConfig::synced("messages", "Message")
+            .columns([ColumnDef::synced("id", "id", "id", "TEXT", "string", false)]);
+        let value = cfg.tombstone_updated_at_value();
+        assert!(value.as_str().is_some());
     }
 
     #[test]

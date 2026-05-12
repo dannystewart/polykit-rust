@@ -34,10 +34,10 @@ use crate::sync::reconcile::{ReconcilePlan, VersionTriple, make_plan};
 
 /// Top-level coordinator. Cheap to clone (`Arc`).
 ///
-/// The coordinator owns the network side (PostgREST + Edge dispatch + echo tracker), the
-/// offline queue, and a [`LocalStore`] handle. It is the single source of truth for the
-/// "write local, then push to network, retry on failure" lifecycle that all synced entities
-/// share — consumers should NOT touch `LocalStore` directly for writes.
+/// The coordinator owns the network side (PostgREST + Edge dispatch + echo tracker), the offline
+/// queue, and a [`LocalStore`] handle. It is the single source of truth for the "write local, then
+/// push to network, retry on failure" lifecycle that all synced entities share — consumers should
+/// NOT touch `LocalStore` directly for writes.
 #[derive(Clone)]
 pub struct Coordinator {
     inner: Arc<CoordinatorInner>,
@@ -57,8 +57,8 @@ struct CoordinatorInner {
 }
 
 impl Coordinator {
-    /// Build a coordinator from already-constructed pieces. Encryption is optional; when
-    /// `None`, columns flagged `encrypted = true` are pushed and pulled in plaintext.
+    /// Build a coordinator from already-constructed pieces. Encryption is optional; when `None`,
+    /// columns flagged `encrypted = true` are pushed and pulled in plaintext.
     pub fn new(
         client: Client,
         sessions: SessionStore,
@@ -88,9 +88,9 @@ impl Coordinator {
         }
     }
 
-    /// Borrow the [`LocalStore`] for read-side queries. All write-side operations should go
-    /// through [`Coordinator::persist_change`] / [`Coordinator::delete`] so the local mirror
-    /// and the offline queue stay coherent.
+    /// Borrow the [`LocalStore`] for read-side queries. All write-side operations should go through
+    /// [`Coordinator::persist_change`] / [`Coordinator::delete`] so the local mirror and the
+    /// offline queue stay coherent.
     pub fn local(&self) -> &Arc<dyn LocalStore> {
         &self.inner.local
     }
@@ -111,14 +111,14 @@ impl Coordinator {
         &self.inner.registry
     }
 
-    /// Look up the registered [`WritePath`] for a table without dispatching anything. Useful
-    /// for diagnostics and consumers that want to make routing decisions ahead of time.
+    /// Look up the registered [`WritePath`] for a table without dispatching anything. Useful for
+    /// diagnostics and consumers that want to make routing decisions ahead of time.
     pub fn write_path_for(&self, table: &str) -> Option<WritePath> {
         self.inner.registry.config_for_table(table).map(|c| c.write_path)
     }
 
-    /// Persist a change using the entity's registered default Edge op (or PostgREST upsert,
-    /// when the entity is registered with `WritePath::PostgREST`).
+    /// Persist a change using the entity's registered default Edge op (or PostgREST upsert, when
+    /// the entity is registered with `WritePath::PostgREST`).
     ///
     /// Equivalent to [`Self::persist_change_with_op`] with `op = None`.
     pub async fn persist_change(
@@ -133,8 +133,8 @@ impl Coordinator {
     /// other fields should follow the registered REMOTE column shape for the table — the
     /// coordinator will translate to local column names before writing the local mirror.
     ///
-    /// Lifecycle (single source of truth — consumers should NOT touch [`LocalStore`] directly
-    /// for writes):
+    /// Lifecycle (single source of truth — consumers should NOT touch [`LocalStore`] directly for
+    /// writes):
     /// 1. If the entity is registered with `include_user_id = true`, injects the active user's
     ///    id under the configured `user_id_column` (default `user_id`).
     /// 2. If an [`Encryption`] is wired in and the entity has columns flagged `encrypted = true`,
@@ -176,8 +176,8 @@ impl Coordinator {
         let session = self.inner.sessions.current().await.ok_or(PolyError::NoSession)?;
 
         // Single canonical preparation step: encrypt encrypted columns + inject user_id.
-        // Implementation lives on EntityConfig so callers running their own push path
-        // (e.g. Prism's SyncCoordinator) share the same logic.
+        // Implementation lives on EntityConfig so callers running their own push path (e.g. Prism's
+        // SyncCoordinator) share the same logic.
         let record = config.serialize_for_remote(
             self.inner.encryption.as_ref(),
             &session.user_id,
@@ -210,9 +210,9 @@ impl Coordinator {
                 }
                 Ok(())
             }
-            // Same-version mutation is the trigger's benign rejection — the row is already at
-            // this version on the server, typically from a concurrent push. Treat as success.
-            // Mirrors Swift `PolyBase`'s `isSameVersionMutationError` short-circuit.
+            // Same-version mutation is the trigger's benign rejection — the row is already at this
+            // version on the server, typically from a concurrent push. Treat as success. Mirrors
+            // Swift `PolyBase`'s `isSameVersionMutationError` short-circuit.
             Err(PolyError::Push(PushError::SameVersionMutationIgnored { .. })) => {
                 debug!("polybase: same-version mutation ignored for {table} {entity_id} (benign)",);
                 if table == crate::kvs::KVS_TABLE {
@@ -240,10 +240,10 @@ impl Coordinator {
                 Ok(())
             }
             Err(err) => {
-                // Permanent rejection: drop from queue. If it's a version regression, also
-                // signal so host apps can trigger a targeted pull and converge. The error
-                // still propagates so callers can surface it (e.g. for diagnostics) — only
-                // the side-effect of the event is added.
+                // Permanent rejection: drop from queue. If it's a version regression, also signal
+                // so host apps can trigger a targeted pull and converge. The error still propagates
+                // so callers can surface it (e.g. for diagnostics) — only the side-effect of the
+                // event is added.
                 if is_version_regression(&err) {
                     self.inner.events.publish(PolyEvent::VersionRegressionDetected {
                         table: table.into(),
@@ -265,9 +265,9 @@ impl Coordinator {
 
     /// Decrypt a remote-shaped row in place using the registered encryption columns.
     ///
-    /// Use this on every row pulled from PostgREST or delivered via realtime BEFORE handing
-    /// it to a [`crate::registry::FactoryFn`] or merging it into the local mirror. No-op when
-    /// the coordinator was constructed without an [`Encryption`] or the table is unregistered.
+    /// Use this on every row pulled from PostgREST or delivered via realtime BEFORE handing it to a
+    /// [`crate::registry::FactoryFn`] or merging it into the local mirror. No-op when the
+    /// coordinator was constructed without an [`Encryption`] or the table is unregistered.
     pub fn decode_remote_record(
         &self,
         table: &str,
@@ -284,9 +284,9 @@ impl Coordinator {
     }
 
     /// Build a [`ReconcilePlan`] for `table` by combining caller-supplied local versions with a
-    /// fresh remote `read_versions` probe. The actual pull / push execution is left to the
-    /// caller (which owns the local store) — this method is the orchestration boundary that
-    /// hides the puller and planner internals from consumers.
+    /// fresh remote `read_versions` probe. The actual pull / push execution is left to the caller
+    /// (which owns the local store) — this method is the orchestration boundary that hides the
+    /// puller and planner internals from consumers.
     pub async fn reconcile_plan_for(
         &self,
         table: &str,
@@ -313,10 +313,10 @@ impl Coordinator {
 
     /// Soft-delete via tombstone UPDATE (PostgREST) or via Edge Function delete op.
     ///
-    /// Local mirror is marked deleted FIRST so reads stay consistent before the network
-    /// round-trip. Transient network failures enqueue a tombstone op for replay; permanent
-    /// failures propagate (and the local row remains tombstoned, which is the correct
-    /// final state since the user explicitly asked to delete).
+    /// Local mirror is marked deleted FIRST so reads stay consistent before the network round-trip.
+    /// Transient network failures enqueue a tombstone op for replay; permanent failures propagate
+    /// (and the local row remains tombstoned, which is the correct final state since the user
+    /// explicitly asked to delete).
     pub async fn delete(
         &self,
         table: &str,
@@ -328,7 +328,7 @@ impl Coordinator {
                 PolyError::Registry(RegistryError::TableNotRegistered(table.into()))
             })?;
         let session = self.inner.sessions.current().await.ok_or(PolyError::NoSession)?;
-        let updated_at = chrono::Utc::now().to_rfc3339();
+        let updated_at = config.tombstone_updated_at_value();
 
         self.inner.local.mark_deleted(table, entity_id, version).await?;
 
@@ -336,7 +336,7 @@ impl Coordinator {
             WritePath::PostgREST => {
                 self.inner
                     .pusher
-                    .update_tombstone(table, entity_id, version, &updated_at, &session.access_token)
+                    .update_tombstone(table, entity_id, version, updated_at, &session.access_token)
                     .await
             }
             WritePath::Edge { function, .. } => {
@@ -399,9 +399,9 @@ impl Coordinator {
         }
     }
 
-    /// Apply a remote-shaped row to the local mirror. Used by realtime delivery and pull
-    /// merge paths. Decrypts encrypted columns first, then maps remote → local field names
-    /// before calling `LocalStore::upsert_record`. Emits `KvsChanged` for the `kvs` table.
+    /// Apply a remote-shaped row to the local mirror. Used by realtime delivery and pull merge
+    /// paths. Decrypts encrypted columns first, then maps remote → local field names before calling
+    /// `LocalStore::upsert_record`. Emits `KvsChanged` for the `kvs` table.
     pub async fn apply_remote_record(
         &self,
         table: &str,
@@ -458,8 +458,8 @@ fn is_transient(err: &PolyError) -> bool {
 }
 
 /// True when a permanent push/edge failure is a version regression — caller is older than the
-/// server. The coordinator emits `PolyEvent::VersionRegressionDetected` for these so consumers
-/// can trigger a targeted pull and converge.
+/// server. The coordinator emits `PolyEvent::VersionRegressionDetected` for these so consumers can
+/// trigger a targeted pull and converge.
 fn is_version_regression(err: &PolyError) -> bool {
     match err {
         PolyError::Push(push) => push.is_version_regression(),
@@ -533,8 +533,8 @@ mod tests {
         Arc::new(registry)
     }
 
-    /// Minimal in-memory `LocalStore` for coordinator tests — captures every write so the
-    /// test can assert what the coordinator persisted before / instead of touching the network.
+    /// Minimal in-memory `LocalStore` for coordinator tests — captures every write so the test can
+    /// assert what the coordinator persisted before / instead of touching the network.
     #[derive(Debug, Default, Clone)]
     struct MemLocalStore {
         rows: Arc<SyncMutex<HashMap<(String, String), Record>>>,
@@ -788,9 +788,9 @@ mod tests {
         .unwrap()
         .clone();
 
-        // No real network is available — example.supabase.co won't resolve. The coordinator
-        // must still have written to local before the network call failed, and must enqueue
-        // for replay rather than propagating the error.
+        // No real network is available — example.supabase.co won't resolve. The coordinator must
+        // still have written to local before the network call failed, and must enqueue for replay
+        // rather than propagating the error.
         coord.persist_change("messages", record).await.unwrap();
 
         let local_row = local.snapshot("messages", "m1").expect("local row written first");
@@ -841,8 +841,8 @@ mod tests {
     #[test]
     fn is_transient_does_not_swallow_same_version_mutation() {
         // The coordinator handles `SameVersionMutationIgnored` in its OWN match arm before
-        // `is_transient` is consulted. If `is_transient` ever started returning true for it,
-        // the row would be enqueued for retry forever — that's the regression this pins.
+        // `is_transient` is consulted. If `is_transient` ever started returning true for it, the
+        // row would be enqueued for retry forever — that's the regression this pins.
         let err = PolyError::Push(PushError::SameVersionMutationIgnored {
             table: "conversations".into(),
         });
@@ -875,9 +875,9 @@ mod tests {
 
     #[tokio::test]
     async fn version_regression_detected_event_round_trips_through_event_bus() {
-        // Documents the event variant the coordinator emits on regression. Synthesizing a
-        // real regression response from `example.supabase.co` would need wiremock; this test
-        // pins the wire contract callers (the JS plugin, host apps) subscribe against.
+        // Documents the event variant the coordinator emits on regression. Synthesizing a real
+        // regression response from `example.supabase.co` would need wiremock; this test pins the
+        // wire contract callers (the JS plugin, host apps) subscribe against.
         let local = Arc::new(MemLocalStore::new());
         let (coord, _sessions) = coordinator_with_local(None, local);
         let mut rx = coord.events().subscribe();
