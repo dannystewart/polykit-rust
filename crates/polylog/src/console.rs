@@ -35,8 +35,8 @@ impl ConsoleLayer {
         let Some(level) = Level::from_tracing(*tracing_level) else {
             return Vec::new();
         };
-        // Per-target override (if any) replaces the global min for matched targets; otherwise the
-        // global min applies.
+        // Per-target override (if any) replaces the global min for matched targets;
+        // otherwise the global min applies.
         let target = event.metadata().target();
         let min_level =
             effective_min_level(target, &self.target_overrides, crate::init::current_min_level());
@@ -136,17 +136,6 @@ fn format_context(
     format!("{} {} {} {} {}\n", ts_str, label_str, target_str, loc, msg_str).into_bytes()
 }
 
-/// Strip the outermost `Some(...)` wrapper from a Debug-formatted value.
-///
-/// `Some(3)` becomes `3`, `Some(false)` becomes `false`. `None` and other values are unchanged.
-fn clean_debug_value(s: &str) -> &str {
-    if let Some(inner) = s.strip_prefix("Some(").and_then(|t| t.strip_suffix(')')) {
-        inner
-    } else {
-        s
-    }
-}
-
 struct MessageVisitor {
     message: String,
     fields: Vec<(String, String)>,
@@ -164,7 +153,7 @@ impl tracing::field::Visit for MessageVisitor {
         if field.name() == "message" {
             self.message = val;
         } else {
-            self.fields.push((field.name().to_string(), clean_debug_value(&val).to_string()));
+            self.fields.push((field.name().to_string(), val));
         }
     }
 
@@ -181,32 +170,6 @@ impl tracing::field::Visit for MessageVisitor {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-
-    #[test]
-    fn clean_debug_value_strips_some_integer() {
-        assert_eq!(clean_debug_value("Some(3)"), "3");
-    }
-
-    #[test]
-    fn clean_debug_value_strips_some_bool() {
-        assert_eq!(clean_debug_value("Some(false)"), "false");
-        assert_eq!(clean_debug_value("Some(true)"), "true");
-    }
-
-    #[test]
-    fn clean_debug_value_leaves_none() {
-        assert_eq!(clean_debug_value("None"), "None");
-    }
-
-    #[test]
-    fn clean_debug_value_leaves_plain_enum() {
-        assert_eq!(clean_debug_value("Pull"), "Pull");
-    }
-
-    #[test]
-    fn clean_debug_value_strips_only_outer_some() {
-        assert_eq!(clean_debug_value("Some(Some(3))"), "Some(3)");
-    }
 
     #[test]
     fn golden_normal_info_ansi() {
