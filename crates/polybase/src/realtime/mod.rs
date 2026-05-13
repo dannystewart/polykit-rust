@@ -59,7 +59,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex as SyncMutex;
-use polylog::{debug, info, warn};
+use polylog::{debug, warn};
 use rand::{Rng, thread_rng};
 use serde_json::{Map, Value};
 use tokio::sync::{Mutex, broadcast, mpsc, watch};
@@ -95,8 +95,8 @@ impl RealtimeChange {
     }
 }
 
-/// Lifecycle event for a [`Subscription`]. Hosts subscribe to these to trigger reconcile
-/// passes on reconnect, surface a "live/stale" indicator in UI, etc.
+/// Lifecycle event for a [`Subscription`]. Hosts subscribe to these to trigger reconcile passes on
+/// reconnect, surface a "live/stale" indicator in UI, etc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleEvent {
     /// Initial connection established and `phx_join` succeeded.
@@ -148,8 +148,8 @@ impl Subscription {
     /// Construct a subscription from raw channel halves. Public so alternative
     /// [`RealtimeTransport`] implementations (e.g. test fixtures, polling backends, custom
     /// WebSocket clients) can build a `Subscription` without going through
-    /// [`SupabaseRealtimeTransport`]. Production callers should never need this — they get
-    /// a `Subscription` from `transport.subscribe(...)`.
+    /// [`SupabaseRealtimeTransport`]. Production callers should never need this — they get a
+    /// `Subscription` from `transport.subscribe(...)`.
     pub fn new(
         rx: broadcast::Receiver<RealtimeChange>,
         lifecycle_tx: broadcast::Sender<LifecycleEvent>,
@@ -157,8 +157,8 @@ impl Subscription {
         Self { rx, lifecycle_tx }
     }
 
-    /// Wait for the next change. Returns `None` if the underlying channel closes (transport
-    /// was unsubscribed). Lagged subscribers transparently skip dropped events.
+    /// Wait for the next change. Returns `None` if the underlying channel closes (transport was
+    /// unsubscribed). Lagged subscribers transparently skip dropped events.
     pub async fn next(&mut self) -> Option<RealtimeChange> {
         loop {
             match self.rx.recv().await {
@@ -171,35 +171,35 @@ impl Subscription {
         }
     }
 
-    /// Get a fresh receiver for lifecycle events. Multiple consumers can call this to react
-    /// to connect/disconnect/reconnect independently.
+    /// Get a fresh receiver for lifecycle events. Multiple consumers can call this to react to
+    /// connect/disconnect/reconnect independently.
     pub fn lifecycle(&self) -> broadcast::Receiver<LifecycleEvent> {
         self.lifecycle_tx.subscribe()
     }
 }
 
-/// Tuning knobs for [`SupabaseRealtimeTransport`]. Defaults are conservative and match
-/// production Tauri Prism behavior with the recovery improvements applied.
+/// Tuning knobs for [`SupabaseRealtimeTransport`]. Defaults are conservative and match production
+/// Tauri Prism behavior with the recovery improvements applied.
 #[derive(Debug, Clone)]
 pub struct TransportConfig {
     /// How often to send Phoenix heartbeats. Default `20s` (Supabase recommendation).
     pub heartbeat_interval: Duration,
-    /// Max wait for the `phx_reply` to a heartbeat before declaring the connection dead.
-    /// Default `10s`.
+    /// Max wait for the `phx_reply` to a heartbeat before declaring the connection dead. Default
+    /// `10s`.
     pub heartbeat_reply_timeout: Duration,
     /// If no inbound message in this window, send a probe. Default `30s`.
     pub liveness_timeout: Duration,
     /// Max wait for the probe response before forcing reconnect. Default `5s`.
     pub liveness_probe_timeout: Duration,
-    /// Delay before the very first reconnect attempt after a disconnect. Kept short to
-    /// recover fast from transient network blips. Default `250ms`.
+    /// Delay before the very first reconnect attempt after a disconnect. Kept short to recover fast
+    /// from transient network blips. Default `250ms`.
     pub initial_reconnect_delay: Duration,
-    /// Backoff ladder for sustained reconnect failures. Each entry is the base delay before
-    /// the corresponding consecutive failure (clamped to the last entry). Default
-    /// `[500ms, 1s, 2s, 5s, 10s, 30s]`.
+    /// Backoff ladder for sustained reconnect failures. Each entry is the base delay before the
+    /// corresponding consecutive failure (clamped to the last entry). Default `[500ms, 1s, 2s, 5s,
+    /// 10s, 30s]`.
     pub backoff_ladder: Vec<Duration>,
-    /// Jitter applied to each reconnect delay as a fraction (e.g. `0.20` = ±20%). Set to
-    /// `0.0` to disable jitter entirely. Default `0.20`.
+    /// Jitter applied to each reconnect delay as a fraction (e.g. `0.20` = ±20%). Set to `0.0` to
+    /// disable jitter entirely. Default `0.20`.
     pub backoff_jitter: f64,
 }
 
@@ -228,8 +228,8 @@ impl Default for TransportConfig {
 /// [`SupabaseRealtimeTransport`].
 #[async_trait]
 pub trait RealtimeTransport: Send + Sync {
-    /// Subscribe to `postgres_changes` on the given tables. The returned [`Subscription`]
-    /// stays valid across internal reconnects.
+    /// Subscribe to `postgres_changes` on the given tables. The returned [`Subscription`] stays
+    /// valid across internal reconnects.
     async fn subscribe(&self, tables: &[&str]) -> Result<Subscription, RealtimeError>;
 
     /// Stop and disconnect. Idempotent — safe to call when not subscribed.
@@ -263,8 +263,8 @@ pub enum RealtimeError {
 
 /// Default Supabase Realtime transport. Speaks Phoenix v2 over `wss://.../realtime/v1/websocket`.
 ///
-/// Owns its own reconnect / heartbeat / liveness machinery. Construct once per session and
-/// reuse — `subscribe`/`unsubscribe` are inexpensive lifecycle calls.
+/// Owns its own reconnect / heartbeat / liveness machinery. Construct once per session and reuse —
+/// `subscribe`/`unsubscribe` are inexpensive lifecycle calls.
 pub struct SupabaseRealtimeTransport {
     supabase_url: String,
     anon_key: String,
@@ -283,8 +283,8 @@ struct SupervisorHandle {
     /// Lifecycle sender owned by the supervisor; we keep a clone here so callers can re-derive
     /// receivers via [`Subscription::lifecycle`] even after the original Subscription is dropped.
     lifecycle_tx: broadcast::Sender<LifecycleEvent>,
-    /// Same idea for the change channel — kept alive so the receivers in dropped Subscriptions
-    /// stay valid for any background pumps still consuming them.
+    /// Same idea for the change channel — kept alive so the receivers in dropped Subscriptions stay
+    /// valid for any background pumps still consuming them.
     change_tx: broadcast::Sender<RealtimeChange>,
 }
 
@@ -388,8 +388,8 @@ impl RealtimeTransport for SupabaseRealtimeTransport {
 
 /// Long-running task that owns one realtime "session" (across many actual WebSocket connections).
 ///
-/// Loops: `connect` → `run_session` → publish disconnect → backoff sleep → reconnect.
-/// Stops only when the shutdown signal flips to `true`.
+/// Loops: `connect` → `run_session` → publish disconnect → backoff sleep → reconnect. Stops only
+/// when the shutdown signal flips to `true`.
 struct Supervisor {
     url: String,
     sessions: SessionStore,
@@ -451,7 +451,7 @@ impl Supervisor {
                     } else {
                         LifecycleEvent::Connected
                     };
-                    info!(
+                    debug!(
                         target: "realtime",
                         event = if had_prior_connection { "reconnected" } else { "connected" },
                         table_count = self.tables.len(),
@@ -541,8 +541,8 @@ fn apply_jitter(base: Duration, jitter: f64) -> Duration {
 
 // MARK: - Connection (single WebSocket session)
 
-/// Outstanding heartbeat refs keyed by ref string, with the time we sent them. Shared between
-/// the heartbeat / liveness probe tasks (both insert) and the read task (removes on `phx_reply`).
+/// Outstanding heartbeat refs keyed by ref string, with the time we sent them. Shared between the
+/// heartbeat / liveness probe tasks (both insert) and the read task (removes on `phx_reply`).
 type HeartbeatTracker = Arc<SyncMutex<HashMap<String, Instant>>>;
 /// Wall-clock of the last inbound frame (any kind). The read task updates it; the liveness task
 /// reads it to detect inbound silence.
@@ -550,9 +550,9 @@ type LastInboundAt = Arc<SyncMutex<Instant>>;
 
 /// One live WebSocket connection. Owns the read/write/heartbeat/liveness tasks while open.
 ///
-/// All connection-scoped state (heartbeat tracker, liveness clock, outbound queue) lives inside
-/// the inner tasks. `Connection` itself holds only the disconnect channel and the task handles
-/// it needs to abort on teardown.
+/// All connection-scoped state (heartbeat tracker, liveness clock, outbound queue) lives inside the
+/// inner tasks. `Connection` itself holds only the disconnect channel and the task handles it needs
+/// to abort on teardown.
 struct Connection {
     disconnect_rx: mpsc::UnboundedReceiver<DisconnectReason>,
     inner_tasks: Vec<JoinHandle<()>>,
@@ -659,8 +659,8 @@ impl Connection {
                     }
                     Ok(Message::Ping(payload)) => {
                         *read_last_inbound.lock() = Instant::now();
-                        // Tungstenite responds to pings automatically via the underlying stream;
-                        // we just refresh the liveness clock.
+                        // Tungstenite responds to pings automatically via the underlying stream; we
+                        // just refresh the liveness clock.
                         let _ = payload;
                     }
                     Ok(Message::Pong(_)) => {
@@ -800,9 +800,9 @@ impl Connection {
             .send(Message::Text(join_msg.to_string().into()))
             .map_err(|e| RealtimeError::SubscribeFailed(format!("phx_join send failed: {e}")))?;
 
-        // Hand off ownership of outgoing_tx to the supervisor's lifetime by dropping the local
-        // copy here. The clones already in the inner tasks keep the mpsc alive while the
-        // connection is up.
+        // Hand off ownership of outgoing_tx to the supervisor's lifetime by dropping the local copy
+        // here. The clones already in the inner tasks keep the mpsc alive while the connection is
+        // up.
         drop(outgoing_tx);
 
         Ok(Self {
