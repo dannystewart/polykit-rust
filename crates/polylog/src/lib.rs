@@ -29,6 +29,7 @@
 
 mod builder;
 mod catch;
+mod clean;
 mod console;
 mod error;
 mod file;

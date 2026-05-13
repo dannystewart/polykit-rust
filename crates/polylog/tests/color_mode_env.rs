@@ -1,4 +1,4 @@
-//! Verify ColorMode::Auto honors NO_COLOR / FORCE_COLOR env vars.
+//! Verify `ColorMode::Auto` honors `NO_COLOR` / `FORCE_COLOR` env vars.
 #![allow(unsafe_code)] // env::set_var is unsafe in Rust 2024; tests deliberately mutate env.
 
 use polylog::ColorMode;

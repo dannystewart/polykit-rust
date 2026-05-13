@@ -1,4 +1,4 @@
-//! Behavior tests for polylog init via the init_harness example.
+//! Behavior tests for polylog init via the `init_harness` example.
 
 use std::process::Command;
 

@@ -6,7 +6,7 @@ pub enum FormatMode {
     /// Timestamp + level label + message.
     #[default]
     Normal,
-    /// Timestamp + level label + target + file:line + message.
+    /// Timestamp + level label + target + `file:line` + message.
     Context,
 }
 

@@ -79,7 +79,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             polylog::debug!("filtered again");
         }
         "catch_logs_error_chain" => {
-            let _g = polylog::init().level(Level::Info).install()?;
             #[derive(Debug)]
             struct Outer(String);
             impl std::fmt::Display for Outer {
@@ -100,13 +99,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             impl std::error::Error for Inner {}
+            let _g = polylog::init().level(Level::Info).install()?;
             let _ = polylog::catch("ctx", || -> Result<(), Outer> {
                 Err(Outer("outer error".to_string()))
             });
         }
         "concurrent_logging_no_corruption" => {
-            let _g = polylog::init().level(Level::Info).install()?;
             use std::thread;
+            let _g = polylog::init().level(Level::Info).install()?;
             let handles: Vec<_> = (0..8)
                 .map(|t| {
                     thread::spawn(move || {

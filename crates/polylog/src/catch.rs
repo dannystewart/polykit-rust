@@ -67,14 +67,8 @@ mod tests {
         }
 
         fn snapshot(&self) -> String {
-            let bytes = match self.0.lock() {
-                Ok(guard) => guard.clone(),
-                Err(_) => panic!("mutex poisoned"),
-            };
-            match String::from_utf8(bytes) {
-                Ok(s) => s,
-                Err(_) => panic!("buffer should be valid UTF-8"),
-            }
+            let bytes = self.0.lock().expect("mutex poisoned").clone();
+            String::from_utf8(bytes).expect("buffer should be valid UTF-8")
         }
     }
 
@@ -96,12 +90,7 @@ mod tests {
         type Writer = BufferWriter<'a>;
 
         fn make_writer(&'a self) -> Self::Writer {
-            BufferWriter {
-                inner: match self.0.lock() {
-                    Ok(guard) => guard,
-                    Err(_) => panic!("mutex poisoned"),
-                },
-            }
+            BufferWriter { inner: self.0.lock().expect("mutex poisoned") }
         }
     }
 

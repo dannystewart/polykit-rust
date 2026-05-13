@@ -66,17 +66,14 @@ pub(crate) fn install_with_config(builder: LogBuilder) -> Result<InitGuard, Init
 }
 
 fn resolve_tz() -> jiff::tz::TimeZone {
-    match jiff::tz::TimeZone::try_system() {
-        Ok(tz) => tz,
-        Err(_) => {
-            eprintln!(
-                "polylog: could not detect system timezone; falling back to America/New_York"
-            );
-            jiff::tz::TimeZone::get("America/New_York").unwrap_or_else(|_| {
-                eprintln!("polylog: failed to load America/New_York timezone; falling back to UTC");
-                jiff::tz::TimeZone::UTC
-            })
-        }
+    if let Ok(tz) = jiff::tz::TimeZone::try_system() {
+        tz
+    } else {
+        eprintln!("polylog: could not detect system timezone; falling back to America/New_York");
+        jiff::tz::TimeZone::get("America/New_York").unwrap_or_else(|_| {
+            eprintln!("polylog: failed to load America/New_York timezone; falling back to UTC");
+            jiff::tz::TimeZone::UTC
+        })
     }
 }
 

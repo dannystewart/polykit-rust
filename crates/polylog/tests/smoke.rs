@@ -1,4 +1,4 @@
-//! Smoke tests for polylog runtime invariants via the init_harness example.
+//! Smoke tests for polylog runtime invariants via the `init_harness` example.
 
 use std::process::Command;
 

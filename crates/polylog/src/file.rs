@@ -19,7 +19,7 @@ impl Visit for MessageVisitor {
 
     fn record_str(&mut self, field: &Field, value: &str) {
         if field.name() == "message" {
-            self.0 = value.to_owned();
+            value.clone_into(&mut self.0);
         }
     }
 }
@@ -56,15 +56,14 @@ pub(crate) fn build_file_layer(
     let (directory, filename): (PathBuf, PathBuf) = {
         let path_str = path.to_string_lossy();
         if path_str.ends_with('/') || path.is_dir() {
-            (path.to_path_buf(), PathBuf::from("polylog.log"))
+            (path.clone(), PathBuf::from("polylog.log"))
         } else {
             let dir = path
                 .parent()
-                .map(|p| if p == Path::new("") { Path::new(".") } else { p })
-                .unwrap_or(Path::new("."))
+                .map_or(Path::new("."), |p| if p == Path::new("") { Path::new(".") } else { p })
                 .to_path_buf();
             let fname =
-                path.file_name().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("polylog.log"));
+                path.file_name().map_or_else(|| PathBuf::from("polylog.log"), PathBuf::from);
             (dir, fname)
         }
     };
@@ -226,10 +225,11 @@ mod tests {
 
     #[test]
     fn build_file_layer_creates_missing_parent_dir() {
-        let rand: u64 = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            Ok(duration) => duration.subsec_nanos().into(),
-            Err(_) => panic!("system time should be after UNIX_EPOCH"),
-        };
+        let rand: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after UNIX_EPOCH")
+            .subsec_nanos()
+            .into();
         let log_path = PathBuf::from(format!("target/tmp/test-mkdir-{rand}/sub/log/app.log"));
         let config = LogConfig {
             level: Level::Info,
@@ -237,13 +237,11 @@ mod tests {
             color: ColorMode::Never,
             log_file: Some(log_path.clone()),
             target_overrides: Arc::from(Vec::<TargetOverride>::new()),
+            strip_target_prefix: None,
         };
         let result = build_file_layer(&config, jiff::tz::TimeZone::UTC);
         assert!(result.is_ok(), "expected Ok but got Err");
-        let dir = match log_path.parent() {
-            Some(dir) => dir,
-            None => panic!("log path should have a parent"),
-        };
+        let Some(dir) = log_path.parent() else { panic!("log path should have a parent") };
         assert!(dir.exists(), "parent dir should have been created");
     }
 
@@ -255,6 +253,7 @@ mod tests {
             color: ColorMode::Never,
             log_file: Some(PathBuf::from("/dev/null/sub")),
             target_overrides: Arc::from(Vec::<TargetOverride>::new()),
+            strip_target_prefix: None,
         };
         let result = build_file_layer(&config, jiff::tz::TimeZone::UTC);
         assert!(

@@ -37,10 +37,7 @@ mod tests {
 
     #[test]
     fn override_changes_min_level_for_scope() {
-        let _guard = match TEST_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(_) => panic!("mutex poisoned"),
-        };
+        let Ok(_guard) = TEST_LOCK.lock() else { panic!("mutex poisoned") };
 
         set_min_level(Level::Info);
         {
@@ -53,10 +50,7 @@ mod tests {
 
     #[test]
     fn nested_overrides_unwind_in_lifo_order() {
-        let _guard = match TEST_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(_) => panic!("mutex poisoned"),
-        };
+        let Ok(_guard) = TEST_LOCK.lock() else { panic!("mutex poisoned") };
 
         set_min_level(Level::Warn);
         {
@@ -79,10 +73,7 @@ mod tests {
         use std::sync::mpsc;
         use std::thread;
 
-        let _guard = match TEST_LOCK.lock() {
-            Ok(guard) => guard,
-            Err(_) => panic!("mutex poisoned"),
-        };
+        let Ok(_guard) = TEST_LOCK.lock() else { panic!("mutex poisoned") };
 
         set_min_level(Level::Error);
 

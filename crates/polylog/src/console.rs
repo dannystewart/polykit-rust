@@ -14,6 +14,7 @@ pub(crate) struct ConsoleLayer {
     color_mode: ColorMode,
     tz: jiff::tz::TimeZone,
     target_overrides: Arc<[TargetOverride]>,
+    strip_target_prefix: Option<Box<str>>,
 }
 
 impl ConsoleLayer {
@@ -23,6 +24,7 @@ impl ConsoleLayer {
             color_mode: config.color,
             tz,
             target_overrides: config.target_overrides.clone(),
+            strip_target_prefix: config.strip_target_prefix.as_deref().map(Box::from),
         }
     }
 
@@ -48,7 +50,7 @@ impl ConsoleLayer {
         event.record(&mut visitor);
         let mut msg = visitor.message;
         for (k, v) in visitor.fields {
-            let _ = write!(&mut msg, " {}={}", k, v);
+            let _ = write!(&mut msg, " {k}={v}");
         }
 
         let ts =
@@ -62,9 +64,17 @@ impl ConsoleLayer {
             FormatMode::Normal => format_normal(level, &ts, &msg, use_ansi),
             FormatMode::Context => {
                 let meta = event.metadata();
-                let target = meta.target();
-                let file = meta.file();
-                let line = meta.line();
+                // For events bridged from the `log` crate, `tracing_log` sets
+                // meta.target() to "log" and stores the real target/file/line
+                // as fields. Prefer those when available.
+                let raw_target = visitor.log_target.as_deref().unwrap_or_else(|| meta.target());
+                let target = self
+                    .strip_target_prefix
+                    .as_deref()
+                    .and_then(|prefix| strip_module_prefix(raw_target, prefix))
+                    .unwrap_or(raw_target);
+                let file = visitor.log_file.as_deref().or_else(|| meta.file());
+                let line = visitor.log_line.or_else(|| meta.line());
                 format_context(level, &ts, target, file, line, &msg, use_ansi)
             }
         }
@@ -89,9 +99,19 @@ where
     }
 }
 
+/// Strip `prefix::` from the front of `target` on an exact module-path boundary.
+///
+/// Returns `Some(rest)` when `target` starts with `prefix` followed by `::`,
+/// and `None` otherwise (leaving the caller to use the original target).
+/// This prevents false matches: `"surfer_lib"` strips from `"surfer_lib::foo"`
+/// but not from `"surfer_library::foo"`.
+fn strip_module_prefix<'a>(target: &'a str, prefix: &str) -> Option<&'a str> {
+    target.strip_prefix(prefix)?.strip_prefix("::")
+}
+
 fn format_simple(level: Level, msg: &str, use_ansi: bool) -> Vec<u8> {
     let line = if use_ansi { msg.color(level_color(level)).to_string() } else { msg.to_string() };
-    format!("{}\n", line).into_bytes()
+    format!("{line}\n").into_bytes()
 }
 
 fn format_normal(level: Level, ts: &str, msg: &str, use_ansi: bool) -> Vec<u8> {
@@ -101,7 +121,7 @@ fn format_normal(level: Level, ts: &str, msg: &str, use_ansi: bool) -> Vec<u8> {
         if use_ansi { label.color(level_color(level)).to_string() } else { label.to_string() };
     let msg_str =
         if use_ansi { msg.color(level_color(level)).to_string() } else { msg.to_string() };
-    format!("{} {} {}\n", ts_str, label_str, msg_str).into_bytes()
+    format!("{ts_str} {label_str} {msg_str}\n").into_bytes()
 }
 
 fn format_context(
@@ -119,50 +139,114 @@ fn format_context(
         if use_ansi { label.color(level_color(level)).to_string() } else { label.to_string() };
     let target_str = if use_ansi { target.blue().to_string() } else { target.to_string() };
 
-    let file_basename = file
-        .map(|f| std::path::Path::new(f).file_name().and_then(|n| n.to_str()).unwrap_or(f))
-        .unwrap_or("<unknown>");
+    let file_basename = file.map_or("<unknown>", |f| {
+        std::path::Path::new(f).file_name().and_then(|n| n.to_str()).unwrap_or(f)
+    });
     let line_num = line.unwrap_or(0);
 
     let loc = if use_ansi {
-        format!("{}:{}", file_basename, line_num.to_string().cyan())
+        format!("{file_basename}:{}", line_num.to_string().cyan())
     } else {
-        format!("{}:{}", file_basename, line_num)
+        format!("{file_basename}:{line_num}")
     };
 
     let msg_str =
         if use_ansi { msg.color(level_color(level)).to_string() } else { msg.to_string() };
 
-    format!("{} {} {} {} {}\n", ts_str, label_str, target_str, loc, msg_str).into_bytes()
+    format!("{ts_str} {label_str} {target_str} {loc} {msg_str}\n").into_bytes()
 }
 
 struct MessageVisitor {
     message: String,
     fields: Vec<(String, String)>,
+    /// Target from `log.target` field, set by `tracing_log::LogTracer` when
+    /// bridging `log` crate events whose tracing metadata target is `"log"`.
+    log_target: Option<String>,
+    /// Source file from `log.file`, bridged from the original `log!()` callsite.
+    log_file: Option<String>,
+    /// Source line from `log.line`, bridged from the original `log!()` callsite.
+    log_line: Option<u32>,
 }
 
 impl MessageVisitor {
     fn new() -> Self {
-        Self { message: String::new(), fields: Vec::new() }
+        Self {
+            message: String::new(),
+            fields: Vec::new(),
+            log_target: None,
+            log_file: None,
+            log_line: None,
+        }
     }
 }
 
 impl tracing::field::Visit for MessageVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        let val = format!("{:?}", value);
-        if field.name() == "message" {
+        let name = field.name();
+        // Intercept log.* bridge fields — they carry the original log crate
+        // metadata and should not appear as key=value pairs in the output.
+        if name.starts_with("log.") {
+            match name {
+                "log.target" => {
+                    self.log_target = Some(format!("{value:?}").trim_matches('"').to_owned())
+                }
+                "log.file" => {
+                    self.log_file = Some(format!("{value:?}").trim_matches('"').to_owned())
+                }
+                _ => {} // log.module_path and others: discard
+            }
+            return;
+        }
+        let val = format!("{value:?}");
+        if name == "message" {
             self.message = val;
         } else {
-            self.fields.push((field.name().to_string(), val));
+            let cleaned = crate::clean::clean_debug_value(&val);
+            // Reuse the original allocation when nothing changed; otherwise
+            // take the newly-produced String from the Cow.
+            let val = match cleaned {
+                std::borrow::Cow::Borrowed(_) => val,
+                std::borrow::Cow::Owned(s) => s,
+            };
+            self.fields.push((name.to_string(), val));
         }
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        if field.name() == "message" {
+        let name = field.name();
+        if name.starts_with("log.") {
+            match name {
+                "log.target" => self.log_target = Some(value.to_owned()),
+                "log.file" => self.log_file = Some(value.to_owned()),
+                _ => {} // log.module_path and others: discard
+            }
+            return;
+        }
+        if name == "message" {
             self.message = value.to_string();
+        } else {
+            self.fields.push((name.to_string(), value.to_string()));
+        }
+    }
+
+    fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+        if field.name() == "log.line" {
+            self.log_line = u32::try_from(value).ok();
         } else {
             self.fields.push((field.name().to_string(), value.to_string()));
         }
+    }
+
+    fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+        self.fields.push((field.name().to_string(), value.to_string()));
+    }
+
+    fn record_f64(&mut self, field: &tracing::field::Field, value: f64) {
+        self.fields.push((field.name().to_string(), value.to_string()));
+    }
+
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        self.fields.push((field.name().to_string(), value.to_string()));
     }
 }
 
@@ -297,10 +381,7 @@ mod tests {
             }
             fn event(&self, event: &tracing::Event<'_>) {
                 let bytes = self.layer.render_event(event);
-                match self.output.lock() {
-                    Ok(mut output) => output.extend_from_slice(&bytes),
-                    Err(_) => panic!("mutex poisoned"),
-                }
+                self.output.lock().expect("mutex poisoned").extend_from_slice(&bytes);
             }
             fn enter(&self, _span: &tracing::span::Id) {}
             fn exit(&self, _span: &tracing::span::Id) {}
@@ -311,6 +392,7 @@ mod tests {
             color_mode: ColorMode::Never,
             tz: jiff::tz::TimeZone::UTC,
             target_overrides: Arc::from(Vec::<TargetOverride>::new()),
+            strip_target_prefix: None,
         };
 
         let sub = Arc::new(CapturingSubscriber { layer, output: Mutex::new(Vec::new()) });
@@ -320,10 +402,35 @@ mod tests {
             tracing::debug!("this should be filtered");
         });
 
-        let output = match sub.output.lock() {
-            Ok(output) => output,
-            Err(_) => panic!("mutex poisoned"),
-        };
+        let Ok(output) = sub.output.lock() else { panic!("mutex poisoned") };
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn strip_module_prefix_strips_on_exact_boundary() {
+        assert_eq!(strip_module_prefix("surfer_lib::foo::bar", "surfer_lib"), Some("foo::bar"));
+    }
+
+    #[test]
+    fn strip_module_prefix_strips_single_segment() {
+        assert_eq!(strip_module_prefix("surfer_lib::foo", "surfer_lib"), Some("foo"));
+    }
+
+    #[test]
+    fn strip_module_prefix_does_not_match_non_boundary() {
+        assert_eq!(strip_module_prefix("surfer_library::foo", "surfer_lib"), None);
+    }
+
+    #[test]
+    fn strip_module_prefix_does_not_match_unrelated() {
+        assert_eq!(strip_module_prefix("other_crate::foo", "surfer_lib"), None);
+    }
+
+    #[test]
+    fn strip_module_prefix_exact_target_returns_empty_string() {
+        // "surfer_lib" with no sub-module: strip_prefix("surfer_lib") → "",
+        // then strip_prefix("::") fails → None. Correct: the whole string IS
+        // the prefix, not a sub-module of it.
+        assert_eq!(strip_module_prefix("surfer_lib", "surfer_lib"), None);
     }
 }

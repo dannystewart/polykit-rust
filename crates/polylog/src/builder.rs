@@ -12,6 +12,7 @@ pub struct LogBuilder {
     color: ColorMode,
     log_file: Option<PathBuf>,
     target_overrides: Vec<TargetOverride>,
+    strip_target_prefix: Option<String>,
 }
 
 impl Default for LogBuilder {
@@ -22,6 +23,7 @@ impl Default for LogBuilder {
             color: ColorMode::Auto,
             log_file: None,
             target_overrides: Vec::new(),
+            strip_target_prefix: None,
         }
     }
 }
@@ -88,6 +90,31 @@ impl LogBuilder {
         self
     }
 
+    /// Strip a leading crate prefix from the target path in [`FormatMode::Context`] output.
+    ///
+    /// When an entire binary lives under one top-level crate name (e.g. `surfer_lib`),
+    /// every log line's target starts with that prefix, adding noise without information.
+    /// This setting strips `"prefix::"` from the front of any target that begins with it,
+    /// on exact module-path boundaries — so `"surfer_lib::foo::bar"` becomes
+    /// `"foo::bar"`, but `"surfer_library::foo"` is left unchanged.
+    ///
+    /// Has no effect in [`FormatMode::Simple`] or [`FormatMode::Normal`] (those modes
+    /// don't display the target at all).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # use polylog::{FormatMode, Level};
+    /// let _ = polylog::init()
+    ///     .format(FormatMode::Context)
+    ///     .strip_target_prefix("surfer_lib")
+    ///     .install();
+    /// ```
+    pub fn strip_target_prefix(mut self, prefix: impl Into<String>) -> Self {
+        self.strip_target_prefix = Some(prefix.into());
+        self
+    }
+
     /// Install the logger and return a guard that must remain in scope.
     pub fn install(self) -> Result<InitGuard, InitError> {
         crate::init::install_with_config(self)
@@ -111,6 +138,8 @@ pub(crate) struct LogConfig {
     /// Pre-sorted overrides (longest prefix first) wrapped in an `Arc` so console + file
     /// layers share the same underlying slice without cloning per event.
     pub(crate) target_overrides: Arc<[TargetOverride]>,
+    /// Optional crate prefix to strip from target paths in [`FormatMode::Context`] output.
+    pub(crate) strip_target_prefix: Option<String>,
 }
 
 impl From<LogBuilder> for LogConfig {
@@ -118,13 +147,14 @@ impl From<LogBuilder> for LogConfig {
         let mut overrides = b.target_overrides;
         // Sort by descending prefix length so longest-prefix wins on first match in the
         // hot path. Stable sort preserves insertion order for equal-length prefixes.
-        overrides.sort_by(|a, b| b.prefix.len().cmp(&a.prefix.len()));
+        overrides.sort_by_key(|o| std::cmp::Reverse(o.prefix.len()));
         Self {
             level: b.level,
             format: b.format,
             color: b.color,
             log_file: b.log_file,
             target_overrides: overrides.into(),
+            strip_target_prefix: b.strip_target_prefix,
         }
     }
 }
@@ -292,5 +322,22 @@ mod tests {
             effective_min_level("prism::sync::delta", &overrides, Level::Warn),
             Level::Debug
         );
+    }
+
+    #[test]
+    fn strip_target_prefix_is_none_by_default() {
+        assert!(LogBuilder::default().strip_target_prefix.is_none());
+    }
+
+    #[test]
+    fn strip_target_prefix_setter_stores_value() {
+        let b = LogBuilder::new().strip_target_prefix("surfer_lib");
+        assert_eq!(b.strip_target_prefix.as_deref(), Some("surfer_lib"));
+    }
+
+    #[test]
+    fn strip_target_prefix_threads_through_config() {
+        let config = LogConfig::from(LogBuilder::new().strip_target_prefix("my_crate"));
+        assert_eq!(config.strip_target_prefix.as_deref(), Some("my_crate"));
     }
 }
