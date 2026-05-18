@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use parking_lot::Mutex as SyncMutex;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, watch};
 
 use crate::client::Client;
 use crate::errors::PolyError;
@@ -20,8 +20,15 @@ use crate::events::{EventBus, PolyEvent, SessionChangeKind};
 /// Concrete callback type for [`SessionStore::on_user_changed`].
 type UserChangeHook = Arc<dyn Fn(Option<&str>) + Send + Sync + 'static>;
 
-/// Cooldown between refresh attempts so we never thrash on a server that keeps 401-ing.
+/// Cooldown between failed refresh attempts so we never thrash on a server that keeps 401-ing.
 pub const REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// Broadcast payload so concurrent `ensure_fresh` waiters share one refresh outcome.
+#[derive(Debug, Clone)]
+enum RefreshWaitResult {
+    Ok(Option<EnsureFreshResult>),
+    Err(String),
+}
 
 /// Full session payload handed off from the auth UX (TypeScript / supabase-js) to polybase.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -98,12 +105,14 @@ struct SessionStoreInner {
     session: RwLock<Option<SessionPayload>>,
     mutation_lock: Mutex<()>,
     refresh_state: Mutex<RefreshState>,
+    refresh_in_flight: Mutex<Option<watch::Sender<Option<RefreshWaitResult>>>>,
     update_counter: AtomicU64,
     user_change_hook: SyncMutex<Option<UserChangeHook>>,
 }
 
 struct RefreshState {
-    last_attempt_at: Option<Instant>,
+    /// Set after a failed refresh; blocks new attempts until [`REFRESH_COOLDOWN`] elapses.
+    last_failure_at: Option<Instant>,
 }
 
 impl SessionStore {
@@ -115,7 +124,8 @@ impl SessionStore {
                 events,
                 session: RwLock::new(None),
                 mutation_lock: Mutex::new(()),
-                refresh_state: Mutex::new(RefreshState { last_attempt_at: None }),
+                refresh_state: Mutex::new(RefreshState { last_failure_at: None }),
+                refresh_in_flight: Mutex::new(None),
                 update_counter: AtomicU64::new(1),
                 user_change_hook: SyncMutex::new(None),
             }),
@@ -201,7 +211,8 @@ impl SessionStore {
             let mut guard = self.inner.session.write().await;
             *guard = None;
         }
-        self.inner.refresh_state.lock().await.last_attempt_at = None;
+        self.inner.refresh_state.lock().await.last_failure_at = None;
+        self.inner.refresh_in_flight.lock().await.take();
 
         let kind =
             if had_session { SessionMutationKind::Cleared } else { SessionMutationKind::Noop };
@@ -275,40 +286,99 @@ impl SessionStore {
         min_valid_for: Duration,
         force: bool,
     ) -> Result<Option<EnsureFreshResult>, PolyError> {
-        let Some(session) = self.current().await else {
-            return Ok(None);
-        };
-        if !force && !session_expires_within(&session, min_valid_for) {
-            return Ok(Some(EnsureFreshResult { session, refreshed: false }));
-        }
+        loop {
+            if let Some(tx) = self.inner.refresh_in_flight.lock().await.clone() {
+                return Self::await_refresh_watch(tx.subscribe()).await;
+            }
 
-        let mut refresh_state = self.inner.refresh_state.lock().await;
-        let current = self.current().await.ok_or(PolyError::NoSession)?;
-        if !force && !session_expires_within(&current, min_valid_for) {
-            return Ok(Some(EnsureFreshResult { session: current, refreshed: false }));
-        }
+            let Some(session) = self.current().await else {
+                return Ok(None);
+            };
+            if !force && !session_expires_within(&session, min_valid_for) {
+                return Ok(Some(EnsureFreshResult { session, refreshed: false }));
+            }
 
-        if let Some(last_attempt_at) = refresh_state.last_attempt_at {
-            let elapsed = last_attempt_at.elapsed();
-            if elapsed < REFRESH_COOLDOWN {
-                let remaining_ms = (REFRESH_COOLDOWN - elapsed).as_millis();
-                return Err(PolyError::other(format!(
-                    "session refresh is cooling down; retry in {remaining_ms}ms"
-                )));
+            {
+                let refresh_state = self.inner.refresh_state.lock().await;
+                if let Some(last_failure_at) = refresh_state.last_failure_at {
+                    let elapsed = last_failure_at.elapsed();
+                    if elapsed < REFRESH_COOLDOWN {
+                        let remaining_ms = (REFRESH_COOLDOWN - elapsed).as_millis();
+                        return Err(PolyError::other(format!(
+                            "session refresh is cooling down; retry in {remaining_ms}ms"
+                        )));
+                    }
+                }
+            }
+
+            let current = self.current().await.ok_or(PolyError::NoSession)?;
+            if !force && !session_expires_within(&current, min_valid_for) {
+                return Ok(Some(EnsureFreshResult { session: current, refreshed: false }));
+            }
+
+            let (tx, _) = watch::channel(None);
+            {
+                let mut guard = self.inner.refresh_in_flight.lock().await;
+                if guard.is_some() {
+                    continue;
+                }
+                *guard = Some(tx.clone());
+            }
+
+            let result = self.perform_refresh(&current).await;
+            let wait_result = match &result {
+                Ok(value) => Some(RefreshWaitResult::Ok(value.clone())),
+                Err(error) => Some(RefreshWaitResult::Err(error.to_string())),
+            };
+            let _ = tx.send(wait_result);
+            self.inner.refresh_in_flight.lock().await.take();
+            return result;
+        }
+    }
+
+    async fn await_refresh_watch(
+        mut rx: watch::Receiver<Option<RefreshWaitResult>>,
+    ) -> Result<Option<EnsureFreshResult>, PolyError> {
+        loop {
+            if let Some(outcome) = rx.borrow_and_update().clone() {
+                return match outcome {
+                    RefreshWaitResult::Ok(value) => Ok(value),
+                    RefreshWaitResult::Err(message) => Err(PolyError::other(message)),
+                };
+            }
+            if rx.changed().await.is_err() {
+                return Err(PolyError::other("session refresh leader exited unexpectedly"));
             }
         }
+    }
 
-        refresh_state.last_attempt_at = Some(Instant::now());
-        drop(refresh_state);
-
-        let refreshed_payload = self.refresh_payload(&current).await?;
-        let mutation = self.set_session(refreshed_payload.clone()).await?;
-        self.inner.refresh_state.lock().await.last_attempt_at = None;
-
-        Ok(Some(EnsureFreshResult {
-            session: self.current().await.unwrap_or(refreshed_payload),
-            refreshed: matches!(mutation.kind, SessionMutationKind::CredentialsRefreshed),
-        }))
+    async fn perform_refresh(
+        &self,
+        current: &SessionPayload,
+    ) -> Result<Option<EnsureFreshResult>, PolyError> {
+        match self.refresh_payload(current).await {
+            Ok(refreshed_payload) => {
+                let mutation = self.set_session(refreshed_payload.clone()).await?;
+                self.inner.refresh_state.lock().await.last_failure_at = None;
+                Ok(Some(EnsureFreshResult {
+                    session: self.current().await.unwrap_or(refreshed_payload),
+                    refreshed: matches!(mutation.kind, SessionMutationKind::CredentialsRefreshed),
+                }))
+            }
+            Err(error) => {
+                let message = error.to_string();
+                if is_permanent_refresh_failure(&message) {
+                    polylog::warn!(
+                        error = %message,
+                        "session refresh failed with permanent auth error; clearing session"
+                    );
+                    let _ = self.clear_session().await;
+                } else {
+                    self.inner.refresh_state.lock().await.last_failure_at = Some(Instant::now());
+                }
+                Err(error)
+            }
+        }
     }
 
     async fn refresh_payload(&self, session: &SessionPayload) -> Result<SessionPayload, PolyError> {
@@ -400,6 +470,13 @@ fn session_expires_within(session: &SessionPayload, min_valid_for: Duration) -> 
 
 fn unix_time_secs() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or_default()
+}
+
+/// True when the refresh token cannot be reused and the user must sign in again.
+fn is_permanent_refresh_failure(message: &str) -> bool {
+    message.contains("refresh_token_already_used")
+        || message.contains("invalid_grant")
+        || message.contains("Invalid Refresh Token")
 }
 
 #[cfg(test)]
@@ -523,5 +600,126 @@ mod tests {
 
         store.clear_session().await.unwrap();
         assert_eq!(counter.load(Ordering::SeqCst), 3, "no-op clear must not fire hook");
+    }
+
+    #[tokio::test]
+    async fn concurrent_ensure_fresh_on_fresh_session_succeeds_without_refresh() {
+        let store = Arc::new(make_store());
+        store.set_session(payload("u1", "r")).await.unwrap();
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let store = store.clone();
+            handles.push(tokio::spawn(
+                async move { store.ensure_fresh(Duration::from_secs(60)).await },
+            ));
+        }
+
+        for handle in handles {
+            let result = handle.await.unwrap().unwrap().expect("session present");
+            assert!(!result.refreshed);
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_ensure_fresh_on_expired_session_performs_single_http_refresh() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/auth/v1/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({
+                        "access_token": "new_access",
+                        "refresh_token": "new_refresh",
+                        "expires_in": 3600,
+                        "user": { "id": "u1" }
+                    }))
+                    .set_delay(std::time::Duration::from_millis(50)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Client::with_http(
+            ClientConfig {
+                supabase_url: server.uri(),
+                supabase_anon_key: "anon".into(),
+                encryption_secret: None,
+                storage_bucket: None,
+            },
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let store = Arc::new(SessionStore::standalone(client));
+
+        let mut expired = payload("u1", "old_refresh");
+        expired.expires_at = unix_time_secs() - 10;
+        store.set_session(expired).await.unwrap();
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let store = store.clone();
+            handles.push(tokio::spawn(
+                async move { store.ensure_fresh(Duration::from_secs(60)).await },
+            ));
+        }
+
+        for handle in handles {
+            let result = handle.await.unwrap().unwrap().expect("session present");
+            assert!(result.refreshed);
+            assert_eq!(result.session.access_token, "new_access");
+        }
+
+        let current = store.current().await.expect("session kept");
+        assert_eq!(current.access_token, "new_access");
+        assert_eq!(current.refresh_token, "new_refresh");
+    }
+
+    #[tokio::test]
+    async fn permanent_refresh_failure_clears_session() {
+        use wiremock::matchers::{method, path_regex};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path_regex(r"/auth/v1/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error_code": "refresh_token_already_used",
+                "msg": "Invalid Refresh Token: Already Used"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = Client::with_http(
+            ClientConfig {
+                supabase_url: server.uri(),
+                supabase_anon_key: "anon".into(),
+                encryption_secret: None,
+                storage_bucket: None,
+            },
+            reqwest::Client::new(),
+        )
+        .unwrap();
+        let store = SessionStore::standalone(client);
+
+        let mut expired = payload("u1", "spent_refresh");
+        expired.expires_at = unix_time_secs() - 10;
+        store.set_session(expired).await.unwrap();
+
+        let error = store.ensure_fresh(Duration::from_secs(60)).await.unwrap_err();
+        assert!(error.to_string().contains("refresh_token_already_used"));
+        assert!(store.current().await.is_none());
+    }
+
+    #[test]
+    fn permanent_refresh_failure_detection() {
+        assert!(is_permanent_refresh_failure(
+            "session refresh failed: HTTP 400: refresh_token_already_used"
+        ));
+        assert!(is_permanent_refresh_failure("invalid_grant"));
+        assert!(!is_permanent_refresh_failure("session refresh failed: HTTP 503"));
     }
 }
